@@ -1,0 +1,14 @@
+adaptive: true
+minimum_fps: 0.5
+maximum_fps: 10
+motion_threshold: 0.4
+scene_threshold: 0.7
+audio_threshold: 0.6
+novelty_threshold: 0.5
+buffer_seconds: 10
+weights:
+  motion: 0.30
+  scene: 0.25
+  audio: 0.20
+  subtitle: 0.10
+  novelty: 0.15
