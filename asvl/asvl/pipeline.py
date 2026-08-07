@@ -105,9 +105,19 @@ def run(
     decision_latencies_ms = []
     peak_rss_mb = 0.0
 
+    # --- Per-stage timer accumulators (seconds) ---
+    _t_decode = 0.0
+    _t_motion = 0.0
+    _t_scene = 0.0
+    _t_audio = 0.0
+    _t_novelty = 0.0
+    _t_schedule = 0.0
+
     # --- Main decode loop ---
     for frame_rgb, timestamp_ms in decode_frames(video_path):
+        _ts_decode_start = time.perf_counter()
         loop_start = time.perf_counter()
+        _t_decode += time.perf_counter() - _ts_decode_start
 
         # --- Feature extraction ---
         if prev_frame is None:
@@ -117,12 +127,15 @@ def run(
             scene_change_feat = False
             edge_diff = 0.0
         else:
+            _t0 = time.perf_counter()
             try:
                 motion_score = compute_motion_score(prev_frame, frame_rgb)
             except Exception as exc:
                 logger.debug("Motion score error: %s", exc)
                 motion_score = 0.0
+            _t_motion += time.perf_counter() - _t0
 
+            _t0 = time.perf_counter()
             try:
                 scene_score, scene_change_feat = compute_scene_score(
                     prev_frame, frame_rgb, config.scene_threshold
@@ -130,6 +143,7 @@ def run(
             except Exception as exc:
                 logger.debug("Scene score error: %s", exc)
                 scene_score, scene_change_feat = 0.0, False
+            _t_scene += time.perf_counter() - _t0
 
             try:
                 edge_diff = compute_edge_diff(prev_frame, frame_rgb)
@@ -149,21 +163,27 @@ def run(
             frame_black = False
 
         # Novelty from buffer mean histogram
+        _t0 = time.perf_counter()
         try:
             buf_hist = buffer.mean_histogram()
-            novelty_score = compute_novelty(frame_rgb, buf_hist) if buf_hist is not None else 1.0
+            # Safe default is 0.0 (not novel) when buffer is still empty — avoids
+            # constant 1.0 saturation during the cold-start window.
+            novelty_score = compute_novelty(frame_rgb, buf_hist) if buf_hist is not None else 0.0
         except Exception as exc:
             logger.debug("Novelty score error: %s", exc)
             novelty_score = 0.0
+        _t_novelty += time.perf_counter() - _t0
 
         # --- Scene transition (stateful, separate from scene_score) ---
         scene_changed = scene_detector.update(frame_rgb)
 
-        # --- Audio features ---
+        # --- Audio features (O(1) lookup into pre-built index — no file I/O) ---
+        _t0 = time.perf_counter()
         if audio_index:
             audio_feat = get_audio_at(audio_index, timestamp_ms) or SILENT_AUDIO
         else:
             audio_feat = SILENT_AUDIO
+        _t_audio += time.perf_counter() - _t0
 
         # --- Subtitle density ---
         subtitle_text = subs.get_subtitle_at(timestamp_ms)
@@ -222,11 +242,12 @@ def run(
         )
 
         # --- Scheduler: emit or skip ---
+        _t0 = time.perf_counter()
         scheduler.process(packet, target_fps)
-
         # Yield kept packets
         for kept in scheduler.drain():
             yield kept
+        _t_schedule += time.perf_counter() - _t0
 
         # --- Latency check ---
         loop_ms = (time.perf_counter() - loop_start) * 1000.0
@@ -261,3 +282,10 @@ def run(
         )
         if peak_rss_mb > 2048:
             logger.warning("Peak RSS %.1f MB exceeded 2GB target.", peak_rss_mb)
+
+    # --- Per-stage timing summary (v1.1 instrumentation) ---
+    logger.info(
+        "ASVL stage timings (total seconds) — "
+        "decode=%.2fs  motion=%.2fs  scene=%.2fs  audio=%.2fs  novelty=%.2fs  schedule=%.2fs",
+        _t_decode, _t_motion, _t_scene, _t_audio, _t_novelty, _t_schedule,
+    )

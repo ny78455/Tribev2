@@ -29,7 +29,7 @@ class SceneTransitionDetector:
             - current frame is a black frame (inter-scene fade marker)
     """
 
-    def __init__(self, scene_threshold: float = 0.7) -> None:
+    def __init__(self, scene_threshold: float = 0.45) -> None:
         """
         Args:
             scene_threshold: Passed to compute_scene_score().

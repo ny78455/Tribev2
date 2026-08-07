@@ -2,7 +2,7 @@ adaptive: true
 minimum_fps: 0.5
 maximum_fps: 10
 motion_threshold: 0.4
-scene_threshold: 0.7
+scene_threshold: 0.45  # v1.1: was 0.7; see DECISIONS.md §13
 audio_threshold: 0.6
 novelty_threshold: 0.5
 buffer_seconds: 10

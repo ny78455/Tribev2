@@ -49,7 +49,7 @@ class ASVLConfig:
     minimum_fps: float = 0.5
     maximum_fps: float = 10.0
     motion_threshold: float = 0.4
-    scene_threshold: float = 0.7
+    scene_threshold: float = 0.45  # v1.1: was 0.7; see DECISIONS.md §13
     audio_threshold: float = 0.6
     novelty_threshold: float = 0.5
     buffer_seconds: float = 10.0
