@@ -8,3 +8,29 @@ webvtt-py>=0.4.6
 pyyaml>=6.0
 pytest>=8.0.0
 psutil>=5.9.0
+
+# ---------------------------------------------------------------------------
+# Auto-transcription (optional)
+# ---------------------------------------------------------------------------
+# ASVL uses whisper.cpp (native binary) for auto-transcription when no
+# subtitle file is provided. Install it separately:
+#
+#   Windows: https://github.com/ggerganov/whisper.cpp/releases
+#            or build from source: cmake .. && cmake --build . --config Release
+#
+#   Linux/macOS: git clone https://github.com/ggerganov/whisper.cpp
+#                make
+#
+# Then download a model:
+#   Windows (PowerShell):
+#     Invoke-WebRequest -Uri "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin" -OutFile "models\ggml-base.en.bin"
+#   Linux/macOS:
+#     bash models/download-ggml-model.sh base.en
+#
+# Alternatively, install the Python binding (faster-whisper) for a pure-Python
+# path that does NOT require the native binary:
+#
+#   pip install faster-whisper
+#
+# After installing faster-whisper, set: WHISPER_BIN=faster-whisper
+# (support for the Python fallback is tracked in issue #42)

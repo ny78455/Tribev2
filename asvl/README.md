@@ -19,21 +19,101 @@ pip install -r requirements.txt
 ## Quick Start
 
 ```bash
-# Adaptive sampling — emit only important frames, write manifest
-python cli.py --input movie.mp4 --output out/ --save-manifest
+# Adaptive sampling — emit only important frames.
+# manifest.jsonl is written to out/ by default.
+python cli.py --input movie.mp4 --output out/
+
+# With a subtitle file (skips whisper.cpp auto-transcription)
+python cli.py --input movie.mp4 --output out/ --subtitles movie.srt
 
 # Full options
 python cli.py --input movie.mp4 --output out/ \
   --config config.default.yaml \
   --subtitles movie.srt \
   --mode sync \
-  --save-frames \
-  --save-manifest
+  --save-frames
 
 # Fixed FPS comparison (override adaptive)
 python cli.py --input movie.mp4 --output out_fixed/ \
   --min-fps 2 --max-fps 2
 ```
+
+---
+
+## Auto-Transcription (whisper.cpp)
+
+When no `--subtitles` file is provided, ASVL automatically attempts to
+transcribe the video audio using **whisper.cpp** to improve subtitle-density
+feature quality.
+
+### Setup
+
+**Step 1 — Install whisper.cpp**
+
+```powershell
+# Windows (PowerShell) — build from source
+git clone https://github.com/ggerganov/whisper.cpp
+cd whisper.cpp
+cmake -B build
+cmake --build build --config Release
+# Binary will be at: build\bin\Release\whisper-cli.exe
+# Add to PATH or set WHISPER_BIN environment variable
+```
+
+```bash
+# Linux / macOS
+git clone https://github.com/ggerganov/whisper.cpp && cd whisper.cpp
+make -j4
+sudo cp build/bin/whisper-cli /usr/local/bin/
+```
+
+**Step 2 — Download a model**
+
+```powershell
+# Windows — download base.en model (~148 MB)
+New-Item -ItemType Directory -Force -Path models
+Invoke-WebRequest -Uri "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin" `
+  -OutFile "models\ggml-base.en.bin"
+```
+
+```bash
+# Linux / macOS
+bash models/download-ggml-model.sh base.en
+```
+
+**Step 3 — Run ASVL** (no `--subtitles` needed)
+
+```bash
+python cli.py --input movie.mp4 --output out/
+# ASVL will auto-detect whisper-cli and the model, transcribe, and use the SRT.
+```
+
+### Configuration
+
+| Environment Variable | Description |
+|----------------------|-------------|
+| `WHISPER_BIN` | Full path to `whisper-cli` binary |
+| `WHISPER_MODEL` | Full path to ggml model `.bin` file |
+| `WHISPER_MODEL_DIR` | Directory containing ggml model files |
+
+### Behaviour when whisper.cpp is not installed
+
+Graceful degradation — the pipeline runs normally without subtitles. No crash, no error exit.
+A single `WARNING` log line is emitted:
+```
+WARNING asvl.transcribe: whisper.cpp not found — skipping auto-transcription.
+```
+
+Disable auto-transcription entirely with `--no-transcribe`.
+
+### Available models
+
+| Model | Size | Speed (CPU) | Quality |
+|-------|------|-------------|----------|
+| `ggml-tiny.en.bin` | 77 MB | ~10× real-time | Fair |
+| `ggml-base.en.bin` | 148 MB | ~7× real-time | Good (**default**) |
+| `ggml-small.en.bin` | 466 MB | ~4× real-time | Very good |
+| `ggml-medium.en.bin` | 1.5 GB | ~2× real-time | Excellent |
 
 ---
 
@@ -47,7 +127,10 @@ python cli.py --input movie.mp4 --output out_fixed/ \
 | `--subtitles` | Optional `.srt` or `.vtt` subtitle file |
 | `--mode` | `sync` (default) or `async` scheduler mode |
 | `--save-frames` | Dump kept frames as JPEGs in `<output>/frames/` |
-| `--save-manifest` | Write `<output>/manifest.jsonl` (no raw images) |
+| `--no-manifest` | Suppress writing `<output>/manifest.jsonl` (written by default) |
+| `--no-transcribe` | Disable whisper.cpp auto-transcription |
+| `--whisper-model` | Path to ggml model `.bin` (also via `WHISPER_MODEL`) |
+| `--whisper-language` | Whisper language code (default: `en`, use `auto` to auto-detect) |
 | `--verbose / -v` | Enable DEBUG logging |
 | `--min-fps` | Override `minimum_fps` |
 | `--max-fps` | Override `maximum_fps` |

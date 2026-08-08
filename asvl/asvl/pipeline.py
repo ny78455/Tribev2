@@ -34,6 +34,7 @@ from .features.scene import compute_scene_score
 from .scheduler import FrameScheduler
 from .scene_transition import SceneTransitionDetector
 from .subtitles import SubtitleSync
+from .transcribe import transcribe as _auto_transcribe
 from .types import ASVLConfig, FrameFeatures, FramePacket
 
 logger = logging.getLogger(__name__)
@@ -57,15 +58,24 @@ def run(
     config: ASVLConfig,
     subtitle_path: Optional[str] = None,
     scheduler_mode: str = "sync",
+    auto_transcribe: bool = True,
+    whisper_model: Optional[str] = None,
+    whisper_language: str = "en",
 ) -> Iterator[FramePacket]:
     """
     Main ASVL pipeline: stream-decode a video and yield important FramePackets.
 
     Args:
-        video_path: Path to the input video file.
-        config: ASVLConfig instance (use load_config() to create).
-        subtitle_path: Optional path to .srt or .vtt subtitle file.
-        scheduler_mode: "sync" or "async" queue mode for the scheduler.
+        video_path:       Path to the input video file.
+        config:           ASVLConfig instance (use load_config() to create).
+        subtitle_path:    Optional path to .srt or .vtt subtitle file.
+                          If None and auto_transcribe is True, whisper.cpp is
+                          used to auto-generate subtitles (if available).
+        scheduler_mode:   "sync" or "async" queue mode for the scheduler.
+        auto_transcribe:  Attempt whisper.cpp auto-transcription when no
+                          subtitle_path is provided. Set False to disable.
+        whisper_model:    Override path to whisper ggml model file.
+        whisper_language: Language code for whisper (default: "en").
 
     Yields:
         FramePacket objects for frames selected by the adaptive controller.
@@ -86,7 +96,20 @@ def run(
         buffer_seconds=config.buffer_seconds,
         fps=native_fps,
     )
-    subs = SubtitleSync(subtitle_path)
+
+    # --- Auto-transcription (when no subtitle file provided) ---
+    _auto_srt_path: Optional[str] = None
+    effective_subtitle_path = subtitle_path
+    if subtitle_path is None and auto_transcribe:
+        _auto_srt_path = _auto_transcribe(
+            video_path,
+            model_path=whisper_model,
+            language=whisper_language,
+        )
+        if _auto_srt_path is not None:
+            effective_subtitle_path = _auto_srt_path
+
+    subs = SubtitleSync(effective_subtitle_path)
     scene_detector = SceneTransitionDetector(scene_threshold=config.scene_threshold)
     scheduler = FrameScheduler(mode=scheduler_mode)
 

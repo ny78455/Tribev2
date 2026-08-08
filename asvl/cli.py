@@ -84,6 +84,24 @@ def main() -> None:
         help=argparse.SUPPRESS,  # hidden — manifest is now written by default
     )
     parser.add_argument(
+        "--no-transcribe",
+        action="store_true",
+        help="Disable whisper.cpp auto-transcription (subtitles will be empty unless --subtitles is set).",
+    )
+    parser.add_argument(
+        "--whisper-model",
+        default=None,
+        metavar="BIN",
+        help="Path to whisper.cpp ggml model file (e.g. ggml-base.en.bin). "
+             "Also set via WHISPER_MODEL env var.",
+    )
+    parser.add_argument(
+        "--whisper-language",
+        default="en",
+        metavar="LANG",
+        help="Language code for whisper.cpp transcription (default: en). Use 'auto' for auto-detect.",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable DEBUG logging.",
@@ -140,6 +158,9 @@ def main() -> None:
             config=config,
             subtitle_path=args.subtitles,
             scheduler_mode=args.mode,
+            auto_transcribe=not args.no_transcribe,
+            whisper_model=args.whisper_model,
+            whisper_language=args.whisper_language,
         ):
             kept_count += 1
 
