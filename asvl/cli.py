@@ -73,9 +73,15 @@ def main() -> None:
         help="Dump kept frames as JPEGs into <output>/frames/.",
     )
     parser.add_argument(
+        "--no-manifest",
+        action="store_true",
+        help="Suppress writing <output>/manifest.jsonl (manifest is written by default).",
+    )
+    # Legacy alias kept for backward compatibility
+    parser.add_argument(
         "--save-manifest",
         action="store_true",
-        help="Write <output>/manifest.jsonl (one FramePacket metadata line per kept frame).",
+        help=argparse.SUPPRESS,  # hidden — manifest is now written by default
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -120,7 +126,9 @@ def main() -> None:
 
     manifest_path = os.path.join(args.output, "manifest.jsonl")
     manifest_file = None
-    if args.save_manifest:
+    # Write manifest by default; suppress with --no-manifest.
+    write_manifest = not args.no_manifest
+    if write_manifest:
         manifest_file = open(manifest_path, "w", encoding="utf-8")
         logger.info("Writing manifest to: %s", manifest_path)
 
