@@ -109,7 +109,7 @@ def merge_events(a: Event, b: Event) -> Event:
         importance=float(importance),
         confidence=float(confidence),
         summary=summary,
-        boundary_reason=f"merged({a.boundary_reason}+{b.boundary_reason})",
+        boundary_reason=b.boundary_reason,  # use the closing boundary's reason
         event_type=a.event_type,  # preserve earlier type; classifier will overwrite
         key_frame=key_frame,
         characters=merged_chars,

@@ -29,6 +29,7 @@ _clip_model = None
 _clip_preprocess = None
 _clip_tokenizer = None
 _clip_available = False
+_clip_load_attempted = False  # guard: only try once, even on failure
 _clip_dim = 512  # ViT-B/32 embedding dimension
 
 _STUB_HASH_DIM = 64   # pHash bits
@@ -76,10 +77,12 @@ def _try_load_clip(model_name: str = "ViT-B-32", pretrained: str = "openai") -> 
 
 
 def _init_clip(model_name: str = "ViT-B-32", pretrained: str = "openai") -> None:
-    """Initialize CLIP if not already done."""
-    global _clip_available
-    if _clip_model is None and not _clip_available:
-        _clip_available = _try_load_clip(model_name, pretrained)
+    """Initialize CLIP if not already done. Only attempts load once."""
+    global _clip_available, _clip_load_attempted
+    if _clip_load_attempted:
+        return
+    _clip_load_attempted = True
+    _clip_available = _try_load_clip(model_name, pretrained)
 
 
 # ---------------------------------------------------------------------------

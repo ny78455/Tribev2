@@ -38,7 +38,10 @@ def fuse(signals: BoundarySignal, weights: dict) -> float:
         + weights.get("scene", 0.0) * signals.scene
         + weights.get("dialogue", 0.0) * signals.dialogue
         + weights.get("emotion", 0.0) * signals.emotion   # always 0.0 * signals.emotion = 0.0
-        + weights.get("character", 0.0) * signals.character
+        # character and camera share the "character" weight dimension:
+        # camera cue is a harder cut signal; character is a softer change signal.
+        # Fused as max(character, camera) to avoid double-counting.
+        + weights.get("character", 0.0) * max(signals.character, signals.camera)
         + weights.get("embedding", 0.0) * signals.embedding_distance
         + weights.get("music", 0.0) * signals.music
     )
@@ -59,6 +62,8 @@ def dominant_signal_name(signals: BoundarySignal, weights: dict) -> str:
         "scene": weights.get("scene", 0.0) * signals.scene,
         "dialogue": weights.get("dialogue", 0.0) * signals.dialogue,
         "emotion": weights.get("emotion", 0.0) * signals.emotion,
+        # camera and character share the weight slot; camera dominates when it fires
+        "camera": weights.get("character", 0.0) * signals.camera,
         "character": weights.get("character", 0.0) * signals.character,
         "embedding": weights.get("embedding", 0.0) * signals.embedding_distance,
         "music": weights.get("music", 0.0) * signals.music,
