@@ -1,0 +1,28 @@
+# AESE default configuration
+# See DECISIONS.md §1 for explanation of the renormalized weights.
+# Source spec weights summed to 1.05 (bug); renormalized here to 1.0.
+
+buffer_seconds: 45
+boundary_threshold: 0.75
+minimum_event_duration: 5      # seconds
+maximum_event_duration: 300    # seconds
+merge_threshold: 0.80
+
+# CLIP model settings
+clip_model: "ViT-B-32"
+clip_pretrained: "openai"
+embedding_fusion: "concat"     # "concat" (1024-D) or "mean" (512-D)
+
+# Confidence hold settings (§5.7 — 2-second max delay non-functional requirement)
+confidence_hold_seconds: 2.0
+confidence_margin: 0.05
+
+# NOTE: source spec weights sum to 1.05 — renormalized here (÷1.05). See DECISIONS.md §1.
+weights:
+  prediction_error: 0.238095
+  scene:            0.190476
+  dialogue:         0.142857
+  emotion:          0.095238   # always contributes 0.0 (no emotion model); see DECISIONS.md §8
+  character:        0.142857
+  embedding:        0.142857
+  music:            0.047619
