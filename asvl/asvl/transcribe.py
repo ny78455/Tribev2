@@ -1,22 +1,23 @@
 """
 asvl/asvl/transcribe.py
-Auto-transcription via whisper.cpp.
+Auto-transcription: whisper.cpp native binary OR faster-whisper Python package.
 
-When no subtitle file is supplied, this module:
-  1. Searches for the whisper.cpp binary (whisper-cli, whisper, main).
-  2. Locates a ggml model file.
-  3. Extracts a 16kHz mono WAV from the video (via ffmpeg or PyAV).
-  4. Runs whisper-cli and captures the output .srt file.
-  5. Returns the path to the generated .srt, or None on any failure.
+When no subtitle file is supplied, this module tries two backends in order:
+  1. whisper.cpp native binary (whisper-cli / whisper / main)
+     Fast, no GPU needed. Requires whisper.cpp installed separately.
+  2. faster-whisper Python package  (pip install faster-whisper)
+     Pure Python, downloads model on first use. Slower on CPU but needs
+     no native build.
 
-Failures are always logged at WARNING level and never propagate as exceptions.
-The pipeline continues with empty subtitles if transcription cannot complete.
+If both are unavailable the pipeline runs without subtitles (graceful).
 
 Environment variables
 ---------------------
 WHISPER_BIN       : Override whisper binary path (full path to executable).
 WHISPER_MODEL     : Override model file path (full path to .bin).
 WHISPER_MODEL_DIR : Directory to search for ggml model files.
+FASTER_WHISPER_MODEL : faster-whisper model size or HF repo id
+                       (default: "base"; options: tiny, base, small, medium, large-v3).
 """
 from __future__ import annotations
 
@@ -247,6 +248,101 @@ def extract_audio(video_path: str, wav_path: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# faster-whisper Python fallback
+# ---------------------------------------------------------------------------
+
+def _transcribe_faster_whisper(
+    video_path: str,
+    model_name: str = "base",
+    language: str = "en",
+) -> Optional[str]:
+    """
+    Transcribe *video_path* using the faster-whisper Python package.
+
+    Downloads the model from HuggingFace on first use (cached in
+    ~/.cache/huggingface/).
+
+    Args:
+        video_path:  Path to the input video.
+        model_name:  Model size or HF repo id (default: "base").
+                     Options: tiny, base, small, medium, large-v3
+        language:    Language code ("en", "auto", etc.)
+
+    Returns:
+        Path to generated .srt file, or None on failure.
+    """
+    try:
+        from faster_whisper import WhisperModel  # type: ignore
+    except ImportError:
+        logger.warning(
+            "faster-whisper not installed — no transcription backend available. "
+            "Run: pip install faster-whisper"
+        )
+        return None
+
+    tmp_dir = tempfile.mkdtemp(prefix="asvl_whisper_")
+    srt_path = os.path.join(tmp_dir, "transcript.srt")
+
+    try:
+        logger.info(
+            "Auto-transcription (faster-whisper): loading model '%s' …", model_name
+        )
+        # device="auto" uses CUDA if available, else CPU
+        fw_language = None if language == "auto" else language
+        model = WhisperModel(model_name, device="auto", compute_type="auto")
+
+        logger.info(
+            "Auto-transcription (faster-whisper): transcribing %s …",
+            os.path.basename(video_path),
+        )
+        segments, info = model.transcribe(
+            video_path,
+            language=fw_language,
+            beam_size=5,
+            vad_filter=True,
+        )
+        logger.info(
+            "Detected language '%s' (prob=%.2f)",
+            info.language,
+            info.language_probability,
+        )
+
+        # Write SRT
+        with open(srt_path, "w", encoding="utf-8") as f:
+            for i, seg in enumerate(segments, start=1):
+                start = _seconds_to_srt_time(seg.start)
+                end = _seconds_to_srt_time(seg.end)
+                f.write(f"{i}\n{start} --> {end}\n{seg.text.strip()}\n\n")
+
+        if os.path.getsize(srt_path) == 0:
+            logger.warning("faster-whisper produced an empty SRT — skipping.")
+            return None
+
+        logger.info(
+            "Auto-transcription complete: %s (%.1f KB)",
+            srt_path,
+            os.path.getsize(srt_path) / 1024,
+        )
+        return srt_path
+
+    except Exception as exc:
+        logger.warning("faster-whisper transcription error: %s", exc, exc_info=True)
+        return None
+
+
+def _seconds_to_srt_time(seconds: float) -> str:
+    """Convert float seconds to SRT timestamp: HH:MM:SS,mmm"""
+    ms = int(seconds * 1000)
+    h = ms // 3_600_000
+    ms %= 3_600_000
+    m = ms // 60_000
+    ms %= 60_000
+    s = ms // 1000
+    ms %= 1000
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+# ---------------------------------------------------------------------------
 # Main transcription entry point
 # ---------------------------------------------------------------------------
 
@@ -276,24 +372,30 @@ def transcribe(
         The caller is responsible for cleanup (or simply let the OS clean up
         on process exit — temp dirs are small).
     """
-    # --- Locate binary ---
+    # --- Locate binary: try whisper.cpp, then faster-whisper Python fallback ---
     binary = binary_path or find_whisper_binary()
     if binary is None:
-        logger.warning(
-            "whisper.cpp not found — skipping auto-transcription. "
-            "Install whisper.cpp and add it to PATH, or set WHISPER_BIN."
+        logger.info(
+            "whisper.cpp not found — trying faster-whisper Python fallback."
         )
-        return None
+        return _transcribe_faster_whisper(
+            video_path,
+            model_name=os.environ.get("FASTER_WHISPER_MODEL", "base"),
+            language=language,
+        )
 
-    # --- Locate model ---
+    # --- Locate model (whisper.cpp path) ---
     model = model_path or find_whisper_model(binary)
     if model is None:
         logger.warning(
-            "No whisper model found — skipping auto-transcription. "
-            "Download a model and set WHISPER_MODEL or WHISPER_MODEL_DIR. "
-            "Example: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
+            "No whisper.cpp model found — trying faster-whisper Python fallback. "
+            "To use whisper.cpp: download a model and set WHISPER_MODEL or WHISPER_MODEL_DIR."
         )
-        return None
+        return _transcribe_faster_whisper(
+            video_path,
+            model_name=os.environ.get("FASTER_WHISPER_MODEL", "base"),
+            language=language,
+        )
 
     # --- Work in a temp directory ---
     tmp_dir = tempfile.mkdtemp(prefix="asvl_whisper_")

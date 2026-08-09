@@ -30,7 +30,7 @@ psutil>=5.9.0
 # Alternatively, install the Python binding (faster-whisper) for a pure-Python
 # path that does NOT require the native binary:
 #
-#   pip install faster-whisper
+faster-whisper>=1.0.0
 #
 # After installing faster-whisper, set: WHISPER_BIN=faster-whisper
 # (support for the Python fallback is tracked in issue #42)
