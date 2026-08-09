@@ -1,0 +1,214 @@
+# DECISIONS.md
+# Engineering Assumptions & Design Decisions — AESE Module 2
+
+This file documents every assumption, stub, heuristic, and design decision
+made during AESE (Adaptive Event Segmentation Engine) Module 2 implementation.
+Required by the engineering contract §0 Role Instruction.
+
+---
+
+## 1. WEIGHTS SUM TO 1.05 — SPEC BUG CAUGHT AND RENORMALIZED
+
+**Issue:** The source spec §26 defines boundary signal weights:
+```
+prediction_error: 0.25, scene: 0.20, dialogue: 0.15, emotion: 0.10,
+character: 0.15, embedding: 0.15, music: 0.05
+Sum = 1.05 ← BUG
+```
+
+**Fix:** Renormalized by dividing each weight by 1.05 so they sum to exactly 1.0:
+```
+prediction_error: 0.238095, scene: 0.190476, dialogue: 0.142857,
+emotion: 0.095238, character: 0.142857, embedding: 0.142857, music: 0.047619
+Sum = 1.000000 ✓
+```
+
+**Verification:** `_assert_weights_sum(AESEConfig())` runs at module import time in
+`types.py`. An AssertionError is raised if the sum drifts from 1.0 by more than 1e-4.
+Tests in `test_fusion.py::test_weights_sum_to_one` assert this explicitly.
+
+---
+
+## 2. CLIP Model — Real Implementation with Hash/Histogram Fallback
+
+**Decision:** `adapters/embedding.py` uses OpenCLIP (ViT-B/32, frozen, off-the-shelf).
+- Image embedding: CLIP image encoder → shape (512,)
+- Text embedding: CLIP text encoder → shape (512,)
+- Fusion: "concat" (default) → (1024,); "mean" → (512,)
+
+**Fallback (# STUB):** If `open-clip-torch` is unavailable or the model download
+fails, the embedding falls back to:
+- Perceptual hash (8×8=64-D) + color histogram (32 bins × 3 channels = 96-D) = 160-D
+- Concat fusion yields 320-D in fallback mode
+- This is logged as a WARNING at startup and marked `# STUB` in the code
+- The fallback is NOT a semantic embedding; downstream event coherence will be degraded
+
+**Impact:** Build never blocks on model availability. CLIP quality is not assumed.
+
+---
+
+## 3. SCENE LABEL — STUB (Zero-shot CLIP, ~60-70% accuracy expected)
+
+**Decision:** `adapters/scene_label.py` uses zero-shot CLIP text-image similarity
+against a fixed 12-label set: indoor, outdoor, vehicle interior, street, nature,
+building exterior, office, restaurant, kitchen, bedroom, nighttime, unknown.
+
+**NOT:** A real scene-graph model, VQA model, or places-365 classifier.
+
+**Precision expectation:** ~60-70% on common movie scenes. Not reliable enough
+for fine-grained location understanding. Used only for coarse scene-change detection
+at the boundary signal level.
+
+**Further fallback:** If CLIP is unavailable, uses a color-temperature heuristic
+(blue dominance → outdoor; warm dominance → indoor). Even less reliable.
+
+---
+
+## 4. CHARACTER DETECTION — STUB (Face count only, no identity)
+
+**Decision:** `adapters/character_stub.py` counts detected faces using:
+1. OpenCV DNN SSD ResNet10 (if model files present in `models/` dir)
+2. Haar cascade frontal face (bundled with OpenCV, less accurate)
+3. Returns 0 if neither detector is available
+
+**NOT implemented:** Character re-identification, face tracking, name assignment,
+multi-angle recognition. These are explicitly out of scope (§1.2).
+
+**Future work:** Replace with a face-tracking + re-ID pipeline (e.g. DeepFace,
+InsightFace, or a custom ArcFace embedding tracker).
+
+---
+
+## 5. ACTION LABEL — STUB (3-bucket threshold on motion_score)
+
+**Decision:** `adapters/action_stub.py` buckets Module 1's `motion_score` into:
+- `motion_score < 0.2` → "static"
+- `motion_score < 0.5` → "walking"
+- `else`               → "fast_action"
+
+**NOT:** A real action recognition model (no optical flow classification,
+no pose estimation, no temporal convolutions).
+
+**Future work:** Replace with SlowFast, X3D, or a lightweight MobileNet-based
+action classifier.
+
+---
+
+## 6. SPECTRAL FLUX — STUB (Audio energy delta, not real spectral analysis)
+
+**Decision:** Module 1 does not expose spectral flux. `adapters/music_mood.py`
+estimates it as `|curr_audio_energy - prev_audio_energy|`.
+
+**NOT:** True spectral flux (requires FFT of raw audio frames across consecutive windows).
+
+**Impact:** Music mood bucketing (calm/tense/energetic) is coarser than it would be
+with real spectral analysis. False "tense" labels possible during any energy transition.
+
+---
+
+## 7. TEMPORAL CONTEXT BUFFER — 45s (vs Module 1's 10s)
+
+**Decision:** `context_buffer.py` defaults to 45 seconds, larger than Module 1's 10s.
+
+**Rationale:** Event coherence requires more temporal context than adaptive frame
+sampling decisions. A 10s window is often smaller than a single conversation beat;
+a 45s window can hold a complete short scene (dialogue → action → resolution).
+
+Module 1's 10s buffer is sized for frame-level sampling decisions (is this frame
+important relative to the last 10 seconds?). Module 2's 45s buffer is sized for
+semantic event decisions (does this embedding break the pattern of the last 45 seconds?).
+
+---
+
+## 8. EMOTION SIGNAL — INTENTIONAL ZERO (No emotion model in scope)
+
+**Decision:** `boundary/signals.py::emotion_signal()` ALWAYS returns `0.0`.
+
+**Rationale:** Module 1 provides no emotion-related signal, and no emotion model
+is in scope for Module 2 (§1.2). Returning a fabricated non-zero value (e.g. using
+audio energy as an emotion proxy) would:
+1. Corrupt every downstream boundary decision with a signal having no semantic
+   relationship to actual emotion transitions
+2. Silently make the system appear to have emotion detection capability it doesn't have
+
+**Documented zero:** This is an intentional, documented stub — not a missing feature.
+The emotion weight (0.095238) in `AESEConfig.weights` is effectively wasted, since
+the signal is always 0.0. This is acceptable for V1; the weight exists for when a
+real emotion model is added.
+
+**Future work:** Replace with a lightweight valence/arousal model (e.g. fine-tuned
+CLIP on FER-2013/AffectNet, or a fine-tuned wav2vec on emotional speech).
+
+---
+
+## 9. PREDICTION ERROR MODEL — V1 LINEAR EXTRAPOLATION (Not a transformer)
+
+**Decision:** `boundary/prediction_error.py` uses linear extrapolation from the
+last 2 embeddings to predict the next, then measures cosine distance between
+predicted and actual.
+
+**NOT:** A trained temporal transformer. The contract §5.5 explicitly states:
+"Build the simple version first — NOT a trained transformer — that's future work."
+
+**Extension point:** A clear `# TODO: replace with trained temporal transformer per
+Section 14` comment is placed in `prediction_error.py`.
+
+---
+
+## 10. EVENT GRAPH 'causes' EDGES — NOT IMPLEMENTED
+
+**Decision:** `event_graph.py` implements `before` edges only (temporal order).
+`causes` edges always return an empty list. `EventNode` has no `causes` field.
+
+**Rationale:** Causal inference between events requires LLM reasoning or a trained
+causal model — both are explicitly out of scope for Module 2 (§5.15).
+
+**Future work:** Replace with an LLM-based causal reasoning pass (GPT-4o, Gemini)
+or a trained entailment classifier over event embeddings.
+
+---
+
+## 11. EVENT SUMMARY — TEMPLATE-BASED (Not LLM-generated)
+
+**Decision:** `event_constructor.py::_make_summary()` produces template strings:
+```
+"{action_display} event in {scene_label}, {n} people present"
+```
+
+**NOT:** LLM-generated prose. No LLM API calls are made in this module.
+
+**Rationale:** The source spec §5.9 explicitly states: "No LLM call is in scope
+for this module — implement summary as a template-based string."
+
+**Future work:** Add an LLM summarization step downstream that takes the event
+embedding + temporal features and generates natural language descriptions.
+
+---
+
+## 12. IMAGE NOT AVAILABLE IN MANIFEST-REPLAY MODE
+
+**Decision:** `manifest.jsonl` (Module 1's output) stores metadata only — no pixel
+data. When running `cli.py --input manifest.jsonl` without `--video`, all
+image-dependent adapters (embedding, scene label, character count) receive a
+black placeholder frame `(64×64×3, all zeros)`.
+
+**Impact:**
+- Embeddings in replay mode are the stub fallback (hash + histogram of black frame)
+- Scene labels default to "unknown"
+- Character count returns 0
+- Camera cues derived from `scene_change` flag are still accurate (not image-dependent)
+
+**Mitigation:** Use `--video comedy.mp4` flag to load real frames from the video.
+
+---
+
+## 13. MUSIC MOOD LABELING — HEURISTIC (3-bucket energy/flux threshold)
+
+**Decision:** `adapters/music_mood.py` uses:
+- `audio_energy ≥ 0.25` → "energetic"
+- `audio_energy < 0.08 AND spectral_flux < 0.08` → "calm"
+- `else` → "tense"
+
+**NOT:** A music genre or mood classifier (no trained model).
+
+**Future work:** Replace with musicnn, MusicCNN, or fine-tuned YAMNet.
