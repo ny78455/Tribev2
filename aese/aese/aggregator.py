@@ -151,18 +151,28 @@ class FeatureAggregator:
 
         packets = self._buffer
 
-        # --- Embedding: mean pooling ---
-        image = packets[-1].image if packets[-1].image is not None else _make_black_frame()
+        # --- Determine whether any real pixel data exists for this second ---
+        has_real_image = any(p.image is not None for p in packets)
+
+        # --- Embedding: use real image only; never substitute a black frame ---
+        image_for_embedding = next(
+            (p.image for p in reversed(packets) if p.image is not None), None
+        )
         subtitle_text = next(
             (p.subtitle_text for p in reversed(packets) if p.subtitle_text), None
         )
-        embedding = compute_embedding(
-            image,
-            subtitle_text,
-            model_name=self.config.clip_model,
-            pretrained=self.config.clip_pretrained,
-            fusion=self.config.embedding_fusion,
-        )
+        if image_for_embedding is not None:
+            embedding = compute_embedding(
+                image_for_embedding,
+                subtitle_text,
+                model_name=self.config.clip_model,
+                pretrained=self.config.clip_pretrained,
+                fusion=self.config.embedding_fusion,
+            )
+        else:
+            # No real image — propagate None; fusion will renormalize around this gap
+            from .adapters.embedding import EMBEDDING_DIM
+            embedding = np.zeros(EMBEDDING_DIM, dtype=np.float32)
 
         # --- Numeric: mean pooling ---
         motion_mean = float(np.mean([p.motion_score for p in packets]))
@@ -174,8 +184,12 @@ class FeatureAggregator:
         self._prev_audio_energy = audio_mean
 
         # --- Categorical: majority vote ---
-        scene_labels = [label_scene(p.image if p.image is not None else _make_black_frame()) for p in packets]
-        scene_label = _majority_vote(scene_labels)
+        # Only call image-dependent adapters on packets with real pixel data.
+        # Do NOT substitute a black frame — that conflates "missing" with "confirmed zero."
+        real_image_packets = [p for p in packets if p.image is not None]
+
+        scene_labels = [label_scene(p.image) for p in real_image_packets]
+        scene_label = _majority_vote(scene_labels) if scene_labels else "unknown"
 
         action_labels = [label_action(p.motion_score) for p in packets]
         action_label = _majority_vote(action_labels)
@@ -206,9 +220,10 @@ class FeatureAggregator:
         last_img = packets[-1].image
         self._prev_was_black = (last_img is not None and float(last_img.mean()) < 10.0)
 
-        # --- Character count: max across window (captures peak presence) ---
-        char_counts = [count_characters(p.image) for p in packets]
-        character_count = max(char_counts) if char_counts else 0
+        # --- Character count: max across window (real images only) ---
+        # None means "not observed" (no real image). 0 means "observed zero faces."
+        char_counts = [count_characters(p.image) for p in real_image_packets]
+        character_count: Optional[int] = max(char_counts) if char_counts else None
 
         tf = TemporalFeature(
             timestamp_ms=ts,
@@ -224,6 +239,7 @@ class FeatureAggregator:
             novelty_score=novelty_mean,
             audio_energy=audio_mean,
             spectral_flux=flux,
+            image_available=has_real_image,
         )
 
         self._prev_feature = tf
@@ -236,12 +252,13 @@ class FeatureAggregator:
         for a gap second where no packets landed.
         """
         if self._prev_feature is None:
-            # Cold-start: no previous feature — create a neutral default
+            # Cold-start: no previous feature — create a neutral default.
+            # image_available=False because we have no real data yet.
             from .adapters.embedding import EMBEDDING_DIM
             return TemporalFeature(
                 timestamp_ms=timestamp_ms,
                 scene_label="unknown",
-                character_count=0,
+                character_count=None,    # None, not 0 — no real image data available
                 action_label="static",
                 dialogue_present=False,
                 dialogue_text=None,
@@ -252,6 +269,7 @@ class FeatureAggregator:
                 novelty_score=0.0,
                 audio_energy=0.0,
                 spectral_flux=0.0,
+                image_available=False,
             )
         # Return a copy of the previous feature with updated timestamp
         prev = self._prev_feature
@@ -269,6 +287,7 @@ class FeatureAggregator:
             novelty_score=prev.novelty_score,
             audio_energy=prev.audio_energy,
             spectral_flux=prev.spectral_flux,
+            image_available=prev.image_available,  # carry forward availability flag
         )
 
 

@@ -43,7 +43,13 @@ def character_signal(curr: TemporalFeature, prev: TemporalFeature) -> float:
 
     Normalization constant 2.0: a delta of 2 faces is considered a maximal change
     for most movie scenes. Larger deltas saturate at 1.0.
+
+    Returns 0.0 (neutral) if either second has no real image data — we cannot
+    compute a meaningful delta without observed counts. This is not a fabricated
+    zero; it is an honest absence of evidence.
     """
+    if curr.character_count is None or prev.character_count is None:
+        return 0.0
     return min(abs(curr.character_count - prev.character_count) / 2.0, 1.0)
 
 

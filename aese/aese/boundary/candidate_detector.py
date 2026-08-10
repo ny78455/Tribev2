@@ -61,6 +61,7 @@ class CandidateDetector:
         self._hold_start_ms: Optional[float] = None
         self._hold_scores: List[float] = []
         self._hold_signals: List[BoundarySignal] = []
+        self._hold_available: List[dict] = []  # availability dict per hold slot
 
     def update(
         self,
@@ -88,11 +89,28 @@ class CandidateDetector:
 
         # --- Compute all signals ---
         signals = self._compute_signals(curr, prev)
-        fused = fuse(signals, self.config.weights)
+
+        # Build availability map from image_available flag.
+        # scene, character, and embedding all require real pixel data.
+        # prediction_error is embedding-based — also unavailable without real images.
+        # camera, dialogue, and music are derived from non-image signals (always available).
+        image_ok = getattr(curr, "image_available", True)  # default True for backwards compat
+        available = {
+            "scene": image_ok,
+            "character": image_ok,
+            "embedding": image_ok,
+            "prediction_error": image_ok,
+            "dialogue": True,
+            "camera": True,
+            "music": True,
+            "emotion": True,
+        }
+
+        fused = fuse(signals, self.config.weights, available)
         confidence = compute_confidence(
             fused, self.config.boundary_threshold, self.config.confidence_margin
         )
-        dominant = dominant_signal_name(signals, self.config.weights)
+        dominant = dominant_signal_name(signals, self.config.weights, available)
 
         threshold = self.config.boundary_threshold
         margin = self.config.confidence_margin
@@ -119,6 +137,7 @@ class CandidateDetector:
                 self._hold_start_ms = curr_ts
                 self._hold_scores = [fused]
                 self._hold_signals = [signals]
+                self._hold_available = [available]
                 logger.debug(
                     "AESE boundary hold started at ts=%.0f ms: score=%.3f",
                     curr_ts, fused,
@@ -133,14 +152,18 @@ class CandidateDetector:
                 # Continue the hold — accumulate scores
                 self._hold_scores.append(fused)
                 self._hold_signals.append(signals)
+                self._hold_available.append(available)
                 hold_duration = curr_ts - self._hold_start_ms
 
                 # Commit after 2s of holding OR if we have ≥ 2 scores
                 if hold_duration >= _MAX_HOLD_MS or len(self._hold_scores) >= 2:
                     avg_score = float(np.mean(self._hold_scores))
                     avg_confidence = compute_confidence(avg_score, threshold, margin)
-                    # Re-evaluate the combined signal
-                    all_signals_fused = [fuse(s, self.config.weights) for s in self._hold_signals]
+                    # Re-evaluate the combined signal, passing stored availability per slot
+                    all_signals_fused = [
+                        fuse(s, self.config.weights, av)
+                        for s, av in zip(self._hold_signals, self._hold_available)
+                    ]
                     final_score = max(all_signals_fused)  # take the peak
                     final_conf = compute_confidence(final_score, threshold, margin)
                     is_boundary = final_score >= threshold - margin  # lenient after hold
@@ -148,7 +171,8 @@ class CandidateDetector:
                     # Find the dominant signal from the peak window
                     peak_idx = int(np.argmax(all_signals_fused))
                     final_dominant = dominant_signal_name(
-                        self._hold_signals[peak_idx], self.config.weights
+                        self._hold_signals[peak_idx], self.config.weights,
+                        self._hold_available[peak_idx],
                     )
 
                     self._clear_hold()
@@ -217,3 +241,4 @@ class CandidateDetector:
         self._hold_start_ms = None
         self._hold_scores = []
         self._hold_signals = []
+        self._hold_available = []

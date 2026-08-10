@@ -51,7 +51,7 @@ class TemporalFeature:
     """
     timestamp_ms: float
     scene_label: str                     # STUB — zero-shot CLIP or heuristic; see adapters/scene_label.py
-    character_count: int                 # STUB — face count only, no identity; see adapters/character_stub.py
+    character_count: Optional[int]       # STUB — None = no real image this second; 0 = observed zero faces
     action_label: str                    # STUB — motion_score bucket; see adapters/action_stub.py
     dialogue_present: bool
     dialogue_text: Optional[str]
@@ -62,6 +62,7 @@ class TemporalFeature:
     novelty_score: float
     audio_energy: float = 0.0           # carried from FramePacket.audio_energy
     spectral_flux: float = 0.0          # estimated from audio_energy delta
+    image_available: bool = True         # False when no real pixel data existed for this second (manifest-replay mode)
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +107,8 @@ class Event:
     boundary_reason: str                 # dominant signal name
     event_type: str                      # Section 23 categories: Dialogue/Action/Transition/Scene
     key_frame: Optional[np.ndarray] = None
-    characters: List[int] = field(default_factory=list)   # STUB: list of character counts seen
+    characters: Optional[List[int]] = None              # STUB: list of unique character counts seen; None = no image data
+    character_data_available: bool = True               # False if no seconds in this event had real images
     location_label: Optional[str] = None
 
 
