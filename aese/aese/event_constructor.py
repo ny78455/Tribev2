@@ -158,13 +158,18 @@ class EventConstructor:
         scene_label = _majority(tf.scene_label for tf in features)
         action_label = _majority(tf.action_label for tf in features)
         char_counts = [tf.character_count for tf in features]
-        char_count_max = max(char_counts) if char_counts else 0
+
+        # Filter out seconds with no image data (None = not observed)
+        observed_counts = [c for c in char_counts if c is not None]
+        # characters=None means the entire event had no real image data (not "zero people")
+        characters: Optional[List[int]] = sorted(set(observed_counts)) if observed_counts else None
+        character_data_available = any(getattr(tf, "image_available", True) for tf in features)
+
+        # For the template summary use 0 if no observed data
+        char_count_max = max(observed_counts) if observed_counts else None
 
         # Template-based summary — NOT LLM-generated (see README.md)
         summary = _make_summary(scene_label, action_label, char_count_max)
-
-        # Characters list: all unique counts seen (stub — no real identity)
-        characters = list(set(char_counts))
 
         # Location label from dominant scene label
         location_label = scene_label if scene_label != "unknown" else None
@@ -182,6 +187,7 @@ class EventConstructor:
             event_type="Scene",  # placeholder — will be overwritten by EventClassifier
             key_frame=key_frame,
             characters=characters,
+            character_data_available=character_data_available,
             location_label=location_label,
         )
 
@@ -248,11 +254,12 @@ def _majority(iterable) -> str:
     return counts.most_common(1)[0][0] if counts else "unknown"
 
 
-def _make_summary(scene_label: str, action_label: str, char_count: int) -> str:
+def _make_summary(scene_label: str, action_label: str, char_count: Optional[int]) -> str:
     """
     Template-based event summary.
     NOT LLM-generated — see README.md for explicit statement.
     Format: "<action> event in <scene>, <n> people present"
+    char_count=None means no image data was available (manifest-replay mode).
     """
     action_display = {
         "static": "Dialogue",
@@ -260,10 +267,11 @@ def _make_summary(scene_label: str, action_label: str, char_count: int) -> str:
         "fast_action": "Action",
     }.get(action_label, "Scene")
 
-    people_str = (
-        "no people detected"
-        if char_count == 0
-        else f"{char_count} {'person' if char_count == 1 else 'people'} present"
-    )
+    if char_count is None:
+        people_str = "character data unavailable"
+    elif char_count == 0:
+        people_str = "no people detected"
+    else:
+        people_str = f"{char_count} {'person' if char_count == 1 else 'people'} present"
 
     return f"{action_display} event in {scene_label}, {people_str}"
