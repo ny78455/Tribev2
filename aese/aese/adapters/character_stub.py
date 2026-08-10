@@ -2,13 +2,19 @@
 aese/adapters/character_stub.py
 Character presence adapter.
 
-# STUB: OpenCV DNN face detector — returns face count only.
-No character identity, no tracking, no names, no re-identification.
-This is an intentional stub per the contract (§1.2, §5.0):
-  "No character re-identification/face clustering pipeline — stub: return empty list; log as future work."
+V2: Primary path uses riddhimanrana/fastvlm-0.5b-captions (FastVLM) to count
+people in a frame. This replaces the OpenCV face-detection stub for frames
+where the VLM model is available, giving substantially better recall on
+partial faces, side profiles, and low-resolution frames.
 
-Face count is used as a coarse proxy for "character entrance/exit" in boundary signals.
-Count values are unreliable on small/occluded faces and at low resolution.
+Fallback chain:
+  1. FastVLM (riddhimanrana/fastvlm-0.5b-captions) — primary
+  2. OpenCV DNN SSD ResNet10 face detector — if model files present
+  3. OpenCV Haar cascade — bundled with OpenCV
+  4. 0 — last resort
+
+No character identity, no tracking, no names, no re-identification.
+This is an intentional stub per the contract (§1.2, §5.0).
 See DECISIONS.md §4.
 
 Future work: replace with a proper face-tracking + re-ID pipeline.
@@ -84,22 +90,40 @@ def _init_detector() -> None:
 
 def count_characters(image: Optional[np.ndarray]) -> int:
     """
-    # STUB: Count faces in a frame using OpenCV face detector.
-    Returns the number of detected faces (≥0).
-    No identity, no tracking — just a raw count.
+    Count the number of people visible in a frame.
+
+    Primary path: FastVLM (riddhimanrana/fastvlm-0.5b-captions) prompts the VLM
+    to count people — handles partial faces, side profiles, and low resolution.
+    Fallback: OpenCV DNN / Haar cascade face detectors.
 
     Args:
         image: HxWx3 RGB numpy array, or None (returns 0).
 
     Returns:
-        int: Number of detected faces. Returns 0 for black frames / None images.
+        int: Number of detected people/faces (≥0). Returns 0 for None/black images.
     """
     if image is None or image.max() < 5:
         return 0
 
-    _init_detector()
-
+    # --- Path 1: FastVLM ---
     try:
+        from .fastvlm import count_people, _fastvlm_available
+        count = count_people(image)
+        # If VLM is available and returned a count, trust it
+        if _fastvlm_available:
+            return count
+    except Exception as exc:
+        logger.debug("AESE character_stub: FastVLM path failed: %s — trying OpenCV", exc)
+
+    # --- Path 2 & 3: OpenCV face detector (DNN / Haar) ---
+    return _opencv_count_characters(image)
+
+
+def _opencv_count_characters(image: np.ndarray) -> int:
+    """
+    OpenCV-based face count fallback (DNN SSD or Haar cascade).
+    Extracted from count_characters to keep the primary function readable.
+    """
         # Convert to BGR for OpenCV
         bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
