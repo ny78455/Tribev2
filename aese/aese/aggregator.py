@@ -240,6 +240,7 @@ class FeatureAggregator:
             audio_energy=audio_mean,
             spectral_flux=flux,
             image_available=has_real_image,
+            representative_image=image_for_embedding,  # raw RGB for VLM summary; None in manifest-replay mode
         )
 
         self._prev_feature = tf
