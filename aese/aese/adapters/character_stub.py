@@ -124,8 +124,39 @@ def _opencv_count_characters(image: np.ndarray) -> int:
     OpenCV-based face count fallback (DNN SSD or Haar cascade).
     Extracted from count_characters to keep the primary function readable.
     """
+    _init_detector()
+    try:
         # Convert to BGR for OpenCV
         bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+        if _detector_mode == "dnn":
+            h, w = bgr.shape[:2]
+            blob = cv2.dnn.blobFromImage(
+                cv2.resize(bgr, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0)
+            )
+            _face_net.setInput(blob)
+            detections = _face_net.forward()
+            count = 0
+            for i in range(detections.shape[2]):
+                confidence = float(detections[0, 0, i, 2])
+                if confidence > _DNN_CONF_THRESHOLD:
+                    count += 1
+            return count
+
+        elif _detector_mode == "haar":
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+            faces = _haar_cascade.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+            )
+            return len(faces) if len(faces) > 0 else 0
+
+        else:
+            return 0
+
+    except Exception as exc:
+        logger.debug("AESE character_stub: detection error: %s", exc)
+        return 0
+
 
         if _detector_mode == "dnn":
             h, w = bgr.shape[:2]
