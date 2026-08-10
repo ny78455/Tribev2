@@ -63,6 +63,8 @@ class TemporalFeature:
     audio_energy: float = 0.0           # carried from FramePacket.audio_energy
     spectral_flux: float = 0.0          # estimated from audio_energy delta
     image_available: bool = True         # False when no real pixel data existed for this second (manifest-replay mode)
+    representative_image: Optional[np.ndarray] = None  # raw RGB frame for VLM summary (not serialized to JSON)
+
 
 
 # ---------------------------------------------------------------------------
