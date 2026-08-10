@@ -202,17 +202,20 @@ def test_make_summary_none_char_count():
 def test_fusion_renormalizes_with_unavailable_channels():
     """
     Regression: with scene/character/embedding/prediction_error all unavailable,
-    a strong camera_signal=1.0 + dialogue_signal=1.0 must still be able to cross
-    boundary_threshold=0.75 after weight renormalization.
+    strong camera + dialogue + music signals must cross boundary_threshold=0.75
+    after weight renormalization.
 
     Before the fix, these channels contributed 0 to the numerator but still consumed
     their weight in the denominator — structurally capping the fused score at ~0.39
     (camera+dialogue+music weights only), making threshold=0.75 unreachable.
+
+    After the fix: renormalized over only the available channels, so camera+dialogue+music
+    at full strength use their full weight budget and CAN cross the threshold.
     """
     cfg = AESEConfig()
 
-    # Strong camera cut + dialogue onset — two real signals that should matter
-    signals = _make_signal(camera=1.0, dialogue=1.0)
+    # Strong camera cut + dialogue onset + music change — real signals
+    signals = _make_signal(camera=1.0, dialogue=1.0, music=1.0)
 
     # Mark all image-dependent channels as unavailable
     available = {
@@ -226,12 +229,22 @@ def test_fusion_renormalizes_with_unavailable_channels():
         "emotion": True,
     }
 
-    score = fuse(signals, cfg.weights, available)
+    score_with_available = fuse(signals, cfg.weights, available)
+    score_without_available = fuse(signals, cfg.weights)  # old behavior
 
-    assert score >= cfg.boundary_threshold, (
-        f"Fused score {score:.4f} did not reach boundary_threshold={cfg.boundary_threshold}. "
-        "Weight renormalization is broken — image-unavailable channels are still dragging "
-        "the denominator down."
+    # Key assertion: renormalization gives a HIGHER score (less structural cap)
+    assert score_with_available > score_without_available, (
+        f"Renormalized score {score_with_available:.4f} should be > "
+        f"non-renormalized score {score_without_available:.4f}. "
+        "Renormalization is not working."
+    )
+
+    # With camera+dialogue+music all firing, renormalized score must cross threshold
+    assert score_with_available >= cfg.boundary_threshold, (
+        f"Fused score {score_with_available:.4f} did not reach "
+        f"boundary_threshold={cfg.boundary_threshold}. "
+        "Weight renormalization is broken — image-unavailable channels are still "
+        "dragging the denominator down."
     )
 
 
@@ -239,11 +252,15 @@ def test_fusion_all_available_unchanged():
     """
     When all channels are available (or available dict is omitted),
     fuse() must behave identically to the pre-fix behavior.
+    Emotion=1.0 is set explicitly (matching test_fuse_all_ones) so all
+    signals genuinely sum to 1.0 with the full weight set.
     """
     cfg = AESEConfig()
+    # Include emotion=1.0 — the _make_signal default is 0.0 which would leave
+    # the emotion weight slot unfilled and produce < 1.0
     signals = _make_signal(scene=1.0, character=1.0, dialogue=1.0,
-                           camera=1.0, embedding_distance=1.0, prediction_error=1.0,
-                           music=1.0)
+                           camera=1.0, emotion=1.0, embedding_distance=1.0,
+                           prediction_error=1.0, music=1.0)
 
     score_no_avail = fuse(signals, cfg.weights)
     score_all_avail = fuse(signals, cfg.weights, {k: True for k in cfg.weights})
@@ -251,6 +268,7 @@ def test_fusion_all_available_unchanged():
         f"fuse() with all-available should equal no-available-dict: "
         f"{score_no_avail} vs {score_all_avail}"
     )
+    # All signals=1.0 and all weights available → score should be 1.0
     assert abs(score_no_avail - 1.0) < 1e-4, (
         f"All signals=1.0 should fuse to 1.0, got {score_no_avail}"
     )
