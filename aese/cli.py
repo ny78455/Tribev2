@@ -112,7 +112,10 @@ def _event_to_dict(event: Event, include_embedding: bool = False) -> dict:
         "boundary_reason": event.boundary_reason,
         "event_type": event.event_type,
         "location_label": event.location_label,
+        # Serialize characters as null (not []) when no image data was present.
+        # This is intentional — null means "unavailable", [] means "empty list of observations".
         "characters": event.characters,
+        "character_data_available": event.character_data_available,
     }
     if include_embedding and event.event_embedding is not None:
         # Emit embedding as a compact float list
@@ -179,6 +182,17 @@ def main() -> None:
     except Exception as exc:
         logger.error("Failed to load config: %s", exc)
         sys.exit(1)
+
+    if args.video is None:
+        logger.warning(
+            "\n" + "=" * 70 + "\n"
+            "  RUNNING IN MANIFEST-REPLAY MODE WITHOUT --video\n"
+            "  Character count, scene label, and embedding-based signals will be\n"
+            "  UNAVAILABLE for this run. Event boundaries will rely only on\n"
+            "  motion, audio, subtitle, and camera-cut (scene_change) signals.\n"
+            "  Pass --video <path> for full-fidelity output.\n"
+            + "=" * 70
+        )
 
     logger.info(
         "AESE CLI: input=%s | video=%s | threshold=%.2f | output=%s",
