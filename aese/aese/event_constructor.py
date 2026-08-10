@@ -169,7 +169,13 @@ class EventConstructor:
         char_count_max = max(observed_counts) if observed_counts else None
 
         # Template-based summary — NOT LLM-generated (see README.md)
-        summary = _make_summary(scene_label, action_label, char_count_max)
+        # Attempt VLM-generated summary first if a real image is available.
+        summary = _make_vlm_or_template_summary(
+            features=features,
+            scene_label=scene_label,
+            action_label=action_label,
+            char_count_max=char_count_max,
+        )
 
         # Location label from dominant scene label
         location_label = scene_label if scene_label != "unknown" else None
