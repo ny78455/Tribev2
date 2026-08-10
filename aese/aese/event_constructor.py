@@ -281,3 +281,51 @@ def _make_summary(scene_label: str, action_label: str, char_count: Optional[int]
         people_str = f"{char_count} {'person' if char_count == 1 else 'people'} present"
 
     return f"{action_display} event in {scene_label}, {people_str}"
+
+
+def _make_vlm_or_template_summary(
+    features: list,
+    scene_label: str,
+    action_label: str,
+    char_count_max: Optional[int],
+) -> str:
+    """
+    Generate an event summary using FastVLM if a real image is available,
+    otherwise fall back to the template-based _make_summary.
+
+    VLM path:
+      - Selects the feature with the lowest motion_score (sharpest frame)
+        that also has a representative_image (real pixel data).
+      - Calls adapters.fastvlm.caption_event with the image + context.
+      - Returns the VLM caption if non-empty.
+
+    Fallback (no image / VLM unavailable):
+      - Returns the existing template-based summary string.
+    """
+    # Find the sharpest feature with a real image
+    candidates = [
+        tf for tf in features
+        if getattr(tf, "representative_image", None) is not None
+    ]
+    if candidates:
+        keyframe_feature = min(candidates, key=lambda tf: tf.motion_score)
+        image = keyframe_feature.representative_image
+        dialogue_text = next(
+            (tf.dialogue_text for tf in reversed(features) if tf.dialogue_text),
+            None,
+        )
+        try:
+            from .adapters.fastvlm import caption_event
+            vlm_summary = caption_event(image, scene_label, action_label, dialogue_text)
+            if vlm_summary:
+                logger.debug(
+                    "AESE event_constructor: VLM summary generated (%d chars)", len(vlm_summary)
+                )
+                return vlm_summary
+        except Exception as exc:
+            logger.debug(
+                "AESE event_constructor: VLM summary failed (%s) — using template", exc
+            )
+
+    # Fallback: template-based summary
+    return _make_summary(scene_label, action_label, char_count_max)
