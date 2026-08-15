@@ -2,9 +2,12 @@
 aese/adapters/character_stub.py
 Character presence adapter.
 
-V3: Strengthened OpenCV Haar fallback — adds profile-face cascade (checked
-on both original and horizontally-flipped frame), looser detection parameters,
-and histogram equalization for backlit/high-contrast footage.
+V3: Multi-path OpenCV fallback chain that handles both OpenCV 4 and OpenCV 5.
+  - OpenCV 5+: CascadeClassifier was removed; uses FaceDetectorYN (YuNet ONNX,
+    bundled under models/yunet/) — handles frontal + profile faces natively.
+  - OpenCV 4: Uses Haar cascade (frontal + profile), searched in cv2.data
+    first, then repo-local models/haarcascades/ for headless installs.
+  - DNN SSD ResNet10 (Caffe): OpenCV 4 only (readNetFromCaffe removed in OCV5).
 
 V2: Primary path uses riddhimanrana/fastvlm-0.5b-captions (FastVLM) to count
 people in a frame. This replaces the OpenCV face-detection stub for frames
@@ -13,9 +16,10 @@ partial faces, side profiles, and low-resolution frames.
 
 Fallback chain:
   1. FastVLM (riddhimanrana/fastvlm-0.5b-captions) — primary
-  2. OpenCV DNN SSD ResNet10 face detector — if model files present
-  3. OpenCV Haar cascade (frontal + profile) — bundled with OpenCV
-  4. 0 — last resort
+  2. OpenCV FaceDetectorYN / YuNet ONNX (OpenCV 5+)
+  3. OpenCV DNN SSD ResNet10 (OpenCV 4, Caffe model files present)
+  4. OpenCV Haar cascade frontal + profile (OpenCV 4, bundled XMLs)
+  5. 0 — last resort
 
 No character identity, no tracking, no names, no re-identification.
 This is an intentional stub per the contract (§1.2, §5.0).
@@ -35,92 +39,136 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# OpenCV DNN face detector (SSD ResNet10) — loaded once at first call.
-# Falls back to Haar cascade (frontal + profile) if DNN model files are not
-# available. Falls back to 0 (no face detection) if neither is available.
+# Detect OpenCV major version once
 # ---------------------------------------------------------------------------
-_face_net = None
-_haar_frontal = None   # haarcascade_frontalface_default.xml
-_haar_profile = None   # haarcascade_profileface.xml (left-facing)
-_detector_mode: str = "none"  # "dnn" | "opencv_haar_frontal+profile" | "opencv_haar_frontal" | "none"
+_OCV_VERSION_MAJOR = int(cv2.__version__.split(".")[0])
+
+# ---------------------------------------------------------------------------
+# Detector singletons — set on first _init_detector() call
+# ---------------------------------------------------------------------------
+_face_net = None          # cv2.dnn.Net (DNN SSD, OpenCV 4 only)
+_yunet = None             # cv2.FaceDetectorYN (OpenCV 5+)
+_haar_frontal = None      # cv2.CascadeClassifier (OpenCV 4 only)
+_haar_profile = None      # cv2.CascadeClassifier (OpenCV 4 only)
+
+# "yunet" | "dnn" | "opencv_haar_frontal+profile" | "opencv_haar_frontal" | "none"
+_detector_mode: str = "none"
 _detector_init_done = False
 
-# Confidence threshold for DNN detector
+# Confidence threshold for DNN SSD detector (OpenCV 4 path)
 _DNN_CONF_THRESHOLD = 0.5
+# Confidence threshold for YuNet (score is in the last column of each detection row)
+_YUNET_CONF_THRESHOLD = 0.6
 
-# Paths to look for the DNN face detector model files (relative to this file)
+# ---------------------------------------------------------------------------
+# Paths to local model files
+# ---------------------------------------------------------------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-# Local bundled cascade files — present in repo under models/haarcascades/.
-# Used when the OpenCV install is headless (cv2/data/ contains only __init__.py).
-_LOCAL_HAARCASCADES = os.path.normpath(
-    os.path.join(_THIS_DIR, "..", "..", "models", "haarcascades")
-)
+_MODELS_DIR = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", "models"))
+
+# YuNet ONNX model (OpenCV 5 FaceDetectorYN)
+_YUNET_MODEL = os.path.join(_MODELS_DIR, "yunet", "face_detection_yunet_2023mar.onnx")
+
+# DNN SSD ResNet10 Caffe model (OpenCV 4 only)
 _DNN_PROTO_CANDIDATES = [
-    os.path.join(_THIS_DIR, "..", "..", "models", "deploy.prototxt"),
+    os.path.join(_MODELS_DIR, "deploy.prototxt"),
     "/usr/share/opencv4/haarcascades/deploy.prototxt",
 ]
 _DNN_MODEL_CANDIDATES = [
-    os.path.join(_THIS_DIR, "..", "..", "models", "res10_300x300_ssd_iter_140000.caffemodel"),
+    os.path.join(_MODELS_DIR, "res10_300x300_ssd_iter_140000.caffemodel"),
 ]
 
+# Haar cascade XMLs — cv2.data.haarcascades first, then local repo copy
+# (handles opencv-python-headless installs where cv2/data/ is empty)
+_LOCAL_HAARCASCADES = os.path.join(_MODELS_DIR, "haarcascades")
+
+
+def _find_cascade(filename: str) -> Optional[str]:
+    """Return the path to a Haar cascade XML, searching cv2.data first then local repo."""
+    candidates = [
+        cv2.data.haarcascades + filename,
+        os.path.join(_LOCAL_HAARCASCADES, filename),
+    ]
+    return next((p for p in candidates if os.path.isfile(p)), None)
+
+
+# ---------------------------------------------------------------------------
+# Initialisation
+# ---------------------------------------------------------------------------
 
 def _init_detector() -> None:
-    """Initialize face detector — DNN preferred, Haar cascade (frontal+profile) fallback, 'none' last resort."""
-    global _face_net, _haar_frontal, _haar_profile, _detector_mode, _detector_init_done
+    """
+    Initialize the best available face detector.
+    Priority: YuNet (OCV5) > DNN SSD (OCV4) > Haar (OCV4) > none.
+    """
+    global _face_net, _yunet, _haar_frontal, _haar_profile
+    global _detector_mode, _detector_init_done
     if _detector_init_done:
         return
     _detector_init_done = True
 
-    # Try DNN first
-    proto = next((p for p in _DNN_PROTO_CANDIDATES if os.path.isfile(p)), None)
-    model = next((m for m in _DNN_MODEL_CANDIDATES if os.path.isfile(m)), None)
-    if proto and model:
-        try:
-            _face_net = cv2.dnn.readNet(proto, model)
-            _detector_mode = "dnn"
-            logger.info("AESE character_stub: DNN face detector loaded.")
-            return
-        except Exception as exc:
-            logger.debug("DNN face detector load failed: %s", exc)
-
-    # Fall back to Haar cascade (bundled with OpenCV) — load frontal + profile.
-    # Check cv2.data.haarcascades first; fall back to the local repo copy bundled
-    # under models/haarcascades/ (handles opencv-python-headless installs where
-    # cv2/data/ only contains __init__.py and no XML files).
-    def _find_cascade(filename: str) -> Optional[str]:
-        candidates = [
-            cv2.data.haarcascades + filename,
-            os.path.join(_LOCAL_HAARCASCADES, filename),
-        ]
-        return next((p for p in candidates if os.path.isfile(p)), None)
-
-    frontal_path = _find_cascade("haarcascade_frontalface_default.xml")
-    profile_path = _find_cascade("haarcascade_profileface.xml")
-
-    frontal_ok = frontal_path is not None
-    profile_ok = profile_path is not None
-
-    if frontal_ok:
-        _haar_frontal = cv2.CascadeClassifier(frontal_path)
-        if profile_ok:
-            _haar_profile = cv2.CascadeClassifier(profile_path)
-            _detector_mode = "opencv_haar_frontal+profile"
-            logger.info(
-                "AESE character_stub: Haar cascade (frontal + profile) loaded (DNN unavailable)."
-            )
+    # ---- Path A: OpenCV 5+ — FaceDetectorYN (YuNet ONNX) ----------------
+    if _OCV_VERSION_MAJOR >= 5 and hasattr(cv2, "FaceDetectorYN"):
+        if os.path.isfile(_YUNET_MODEL):
+            try:
+                # Input size is set dynamically per-frame in _opencv_count_characters
+                _yunet = cv2.FaceDetectorYN.create(_YUNET_MODEL, "", (320, 320))
+                _detector_mode = "yunet"
+                logger.info("AESE character_stub: YuNet face detector loaded (OpenCV 5+).")
+                return
+            except Exception as exc:
+                logger.debug("YuNet face detector load failed: %s", exc)
         else:
-            _detector_mode = "opencv_haar_frontal"
-            logger.info(
-                "AESE character_stub: Haar cascade (frontal only, no profile XML found) loaded (DNN unavailable)."
+            logger.warning(
+                "AESE character_stub: OpenCV 5 detected but YuNet model not found at %s. "
+                "Run: download face_detection_yunet_2023mar.onnx to models/yunet/",
+                _YUNET_MODEL,
             )
-        return
+
+    # ---- Path B: OpenCV 4 — DNN SSD ResNet10 (Caffe) --------------------
+    if _OCV_VERSION_MAJOR < 5:
+        proto = next((p for p in _DNN_PROTO_CANDIDATES if os.path.isfile(p)), None)
+        model = next((m for m in _DNN_MODEL_CANDIDATES if os.path.isfile(m)), None)
+        if proto and model:
+            try:
+                _face_net = cv2.dnn.readNet(proto, model)
+                _detector_mode = "dnn"
+                logger.info("AESE character_stub: DNN SSD face detector loaded (OpenCV 4).")
+                return
+            except Exception as exc:
+                logger.debug("DNN SSD face detector load failed: %s", exc)
+
+    # ---- Path C: OpenCV 4 — Haar cascade (frontal + profile) ------------
+    if _OCV_VERSION_MAJOR < 5 and hasattr(cv2, "CascadeClassifier"):
+        frontal_path = _find_cascade("haarcascade_frontalface_default.xml")
+        profile_path = _find_cascade("haarcascade_profileface.xml")
+
+        if frontal_path:
+            _haar_frontal = cv2.CascadeClassifier(frontal_path)
+            if profile_path:
+                _haar_profile = cv2.CascadeClassifier(profile_path)
+                _detector_mode = "opencv_haar_frontal+profile"
+                logger.info(
+                    "AESE character_stub: Haar cascade (frontal+profile) loaded (OpenCV 4)."
+                )
+            else:
+                _detector_mode = "opencv_haar_frontal"
+                logger.info(
+                    "AESE character_stub: Haar cascade (frontal only) loaded (OpenCV 4)."
+                )
+            return
 
     logger.warning(
         "AESE character_stub: No face detector available — count_characters will always return 0. "
+        "For OpenCV 5+: ensure models/yunet/face_detection_yunet_2023mar.onnx exists. "
         "This is a STUB; see DECISIONS.md §4."
     )
     _detector_mode = "none"
 
+
+# ---------------------------------------------------------------------------
+# Public: effective detector chain name
+# ---------------------------------------------------------------------------
 
 def get_effective_detector_chain() -> str:
     """
@@ -128,9 +176,10 @@ def get_effective_detector_chain() -> str:
 
     Possible values:
       "fastvlm"                   — FastVLM model is loaded and active
-      "dnn"                       — OpenCV DNN SSD ResNet10
-      "opencv_haar_frontal+profile" — Haar frontal + profile cascades
-      "opencv_haar_frontal"       — Haar frontal cascade only
+      "yunet"                     — OpenCV FaceDetectorYN (YuNet ONNX, OpenCV 5+)
+      "dnn"                       — OpenCV DNN SSD ResNet10 (OpenCV 4)
+      "opencv_haar_frontal+profile" — Haar frontal + profile cascades (OpenCV 4)
+      "opencv_haar_frontal"       — Haar frontal cascade only (OpenCV 4)
       "none"                      — No detector available
 
     Triggers detector initialisation if not yet done.
@@ -148,6 +197,10 @@ def get_effective_detector_chain() -> str:
     _init_detector()
     return _detector_mode
 
+
+# ---------------------------------------------------------------------------
+# IoU deduplication helper (used by Haar path)
+# ---------------------------------------------------------------------------
 
 def _iou(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> float:
     """Compute intersection-over-union of two rectangles (x, y, w, h)."""
@@ -181,11 +234,14 @@ def _dedup_and_count(
 
     kept: List[Tuple[int, int, int, int]] = []
     for box in all_boxes:
-        # Suppress if any already-kept box overlaps significantly
         if not any(_iou(box, k) > iou_threshold for k in kept):
             kept.append(box)
     return len(kept)
 
+
+# ---------------------------------------------------------------------------
+# Public: count_characters
+# ---------------------------------------------------------------------------
 
 def count_characters(image: Optional[np.ndarray]) -> int:
     """
@@ -193,7 +249,7 @@ def count_characters(image: Optional[np.ndarray]) -> int:
 
     Primary path: FastVLM (riddhimanrana/fastvlm-0.5b-captions) prompts the VLM
     to count people — handles partial faces, side profiles, and low resolution.
-    Fallback: OpenCV DNN / Haar cascade face detectors (frontal + profile).
+    Fallback: OpenCV YuNet (OpenCV 5+) / DNN SSD / Haar cascade (OpenCV 4).
 
     Args:
         image: HxWx3 RGB numpy array, or None (returns 0).
@@ -208,50 +264,58 @@ def count_characters(image: Optional[np.ndarray]) -> int:
     try:
         from .fastvlm import count_people, _fastvlm_available
         count = count_people(image)
-        # If VLM is available and returned a count, trust it
         if _fastvlm_available:
             return count
     except Exception as exc:
         logger.debug("AESE character_stub: FastVLM path failed: %s — trying OpenCV", exc)
 
-    # --- Path 2 & 3: OpenCV face detector (DNN / Haar) ---
+    # --- Path 2/3/4: OpenCV face detector ---
     return _opencv_count_characters(image)
 
 
 def _opencv_count_characters(image: np.ndarray) -> int:
     """
-    OpenCV-based face count fallback (DNN SSD or Haar cascade frontal+profile).
-    Extracted from count_characters to keep the primary function readable.
+    OpenCV-based face count fallback.
 
-    Improvements over V2 Haar path:
-      - scaleFactor 1.1 → 1.05 (finer scale steps, better recall)
-      - minNeighbors 5 → 4 (less conservative suppression)
-      - minSize (30,30) → (20,20) (catches smaller/more distant faces)
-      - equalizeHist() applied before detection (improves backlit/high-contrast recall)
-      - Profile cascade checked on original AND horizontally-flipped frame
-        (haarcascade_profileface.xml is left-facing only)
-      - IoU-based deduplication prevents frontal+profile double-counting
+    Supports three sub-paths depending on OpenCV version and available models:
+      - YuNet (cv2.FaceDetectorYN, OpenCV 5+): best recall, handles poses
+      - DNN SSD ResNet10 (cv2.dnn, OpenCV 4): good recall
+      - Haar cascade frontal+profile (OpenCV 4): basic recall
     """
     _init_detector()
     try:
         bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-        if _detector_mode == "dnn":
+        # ---- YuNet (OpenCV 5+) -------------------------------------------
+        if _detector_mode == "yunet" and _yunet is not None:
+            h, w = bgr.shape[:2]
+            _yunet.setInputSize((w, h))
+            _, results = _yunet.detect(bgr)
+            if results is None:
+                return 0
+            # Filter by confidence (last column)
+            count = sum(
+                1 for det in results if float(det[-1]) >= _YUNET_CONF_THRESHOLD
+            )
+            return count
+
+        # ---- DNN SSD ResNet10 (OpenCV 4) ----------------------------------
+        elif _detector_mode == "dnn" and _face_net is not None:
             blob = cv2.dnn.blobFromImage(
                 cv2.resize(bgr, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0)
             )
             _face_net.setInput(blob)
             detections = _face_net.forward()
-            count = 0
-            for i in range(detections.shape[2]):
-                confidence = float(detections[0, 0, i, 2])
-                if confidence > _DNN_CONF_THRESHOLD:
-                    count += 1
+            count = sum(
+                1 for i in range(detections.shape[2])
+                if float(detections[0, 0, i, 2]) > _DNN_CONF_THRESHOLD
+            )
             return count
 
+        # ---- Haar cascade (OpenCV 4) --------------------------------------
         elif _detector_mode in ("opencv_haar_frontal+profile", "opencv_haar_frontal"):
             gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-            gray = cv2.equalizeHist(gray)  # improves recall in high-contrast/backlit footage
+            gray = cv2.equalizeHist(gray)  # improves recall in backlit footage
 
             raw_front = _haar_frontal.detectMultiScale(
                 gray, scaleFactor=1.05, minNeighbors=4, minSize=(20, 20)
@@ -260,13 +324,12 @@ def _opencv_count_characters(image: np.ndarray) -> int:
 
             faces_profile: List[Tuple[int, int, int, int]] = []
             if _haar_profile is not None:
-                # Left-facing profiles on the original frame
                 raw_left = _haar_profile.detectMultiScale(
                     gray, scaleFactor=1.05, minNeighbors=4, minSize=(20, 20)
                 )
                 faces_profile += list(map(tuple, raw_left)) if len(raw_left) > 0 else []
 
-                # Right-facing profiles: flip the frame, then mirror the x-coordinates back
+                # Right-facing profiles via horizontal flip + mirror x-coords back
                 flipped = cv2.flip(gray, 1)
                 w = gray.shape[1]
                 raw_right = _haar_profile.detectMultiScale(
@@ -274,7 +337,7 @@ def _opencv_count_characters(image: np.ndarray) -> int:
                 )
                 if len(raw_right) > 0:
                     for (x, y, bw, bh) in raw_right:
-                        faces_profile.append((w - x - bw, y, bw, bh))  # mirror x back
+                        faces_profile.append((w - x - bw, y, bw, bh))
 
             return _dedup_and_count(faces_front, faces_profile)
 
