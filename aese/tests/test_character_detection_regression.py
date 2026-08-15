@@ -98,6 +98,7 @@ def test_get_effective_detector_chain_returns_nonempty_string():
     assert len(chain) > 0, "Detector chain string must not be empty"
     assert chain in (
         "fastvlm",
+        "yunet",
         "dnn",
         "opencv_haar_frontal+profile",
         "opencv_haar_frontal",
