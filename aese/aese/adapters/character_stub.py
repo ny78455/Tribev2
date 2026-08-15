@@ -50,6 +50,11 @@ _DNN_CONF_THRESHOLD = 0.5
 
 # Paths to look for the DNN face detector model files (relative to this file)
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+# Local bundled cascade files — present in repo under models/haarcascades/.
+# Used when the OpenCV install is headless (cv2/data/ contains only __init__.py).
+_LOCAL_HAARCASCADES = os.path.normpath(
+    os.path.join(_THIS_DIR, "..", "..", "models", "haarcascades")
+)
 _DNN_PROTO_CANDIDATES = [
     os.path.join(_THIS_DIR, "..", "..", "models", "deploy.prototxt"),
     "/usr/share/opencv4/haarcascades/deploy.prototxt",
@@ -78,12 +83,22 @@ def _init_detector() -> None:
         except Exception as exc:
             logger.debug("DNN face detector load failed: %s", exc)
 
-    # Fall back to Haar cascade (bundled with OpenCV) — load frontal + profile
-    frontal_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    profile_path = cv2.data.haarcascades + "haarcascade_profileface.xml"
+    # Fall back to Haar cascade (bundled with OpenCV) — load frontal + profile.
+    # Check cv2.data.haarcascades first; fall back to the local repo copy bundled
+    # under models/haarcascades/ (handles opencv-python-headless installs where
+    # cv2/data/ only contains __init__.py and no XML files).
+    def _find_cascade(filename: str) -> Optional[str]:
+        candidates = [
+            cv2.data.haarcascades + filename,
+            os.path.join(_LOCAL_HAARCASCADES, filename),
+        ]
+        return next((p for p in candidates if os.path.isfile(p)), None)
 
-    frontal_ok = os.path.isfile(frontal_path)
-    profile_ok = os.path.isfile(profile_path)
+    frontal_path = _find_cascade("haarcascade_frontalface_default.xml")
+    profile_path = _find_cascade("haarcascade_profileface.xml")
+
+    frontal_ok = frontal_path is not None
+    profile_ok = profile_path is not None
 
     if frontal_ok:
         _haar_frontal = cv2.CascadeClassifier(frontal_path)
