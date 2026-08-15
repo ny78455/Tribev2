@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from aese.config import load_config
 from aese.pipeline import run
+from aese.preflight import audit_manifest, print_report
 from aese.types import AESEConfig, Event, FramePacket
 
 
@@ -199,13 +200,42 @@ def main() -> None:
         args.input, args.video or "none (manifest-replay mode)", config.boundary_threshold, args.output,
     )
 
+    # --- Detector-mode banner (Fix 1) ---
+    # Must print unconditionally to stdout — not just logger.warning — so it
+    # cannot be filtered by log level settings or redirected output.
+    from aese.adapters.fastvlm import _ensure_loaded
+    from aese.adapters.character_stub import get_effective_detector_chain
+    _ensure_loaded()  # trigger load attempt before reading the mode
+    active_chain = get_effective_detector_chain()
+    print("=" * 70)
+    print(f"  CHARACTER DETECTION MODE: {active_chain}")
+    if active_chain != "fastvlm":
+        print(
+            "  WARNING: FastVLM is NOT active. Character counts will use a\n"
+            f"  weaker fallback detector ({active_chain}) with lower recall on\n"
+            "  non-frontal faces, small faces, or difficult lighting.\n"
+            "  Install torch, transformers>=4.52, and accelerate to enable\n"
+            "  FastVLM-powered detection."
+        )
+    print("=" * 70)
+
+    # --- Load manifest into memory for pre-flight audit (Fix 3) ---
+    # Buffering into a list allows audit_manifest() to compute stats before
+    # the pipeline consumes the stream. For typical movie manifests (~few
+    # thousand packets at 1-2 fps) the memory overhead is negligible.
+    packet_list = list(_load_manifest(args.input, video_path=args.video))
+
+    # --- Signal-richness pre-flight report (Fix 3) ---
+    report = audit_manifest(packet_list, detector_mode=active_chain)
+    print_report(report)
+
     # --- Run pipeline ---
     output_dir = os.path.dirname(os.path.abspath(args.output))
     os.makedirs(output_dir, exist_ok=True)
 
     event_count = 0
     try:
-        packet_stream = _load_manifest(args.input, video_path=args.video)
+        packet_stream = iter(packet_list)
 
         with open(args.output, "w", encoding="utf-8") as out_fh:
             for event in run(packet_stream, config):
