@@ -99,6 +99,20 @@ def _ensure_loaded() -> bool:
     return _fastvlm_available
 
 
+def get_active_detector_mode() -> str:
+    """
+    Return the active detector mode as a short string.
+
+    Returns 'fastvlm' if the model loaded successfully, 'unavailable' otherwise.
+    Always call _ensure_loaded() first (or call count_people() once) to trigger
+    the load attempt before reading this value.
+    """
+    if _fastvlm_available is None:
+        # Load not yet attempted — trigger it so the result is meaningful
+        _ensure_loaded()
+    return "fastvlm" if _fastvlm_available else "unavailable"
+
+
 def _ask(image_rgb: np.ndarray, prompt: str, max_new_tokens: int = 60) -> str:
     """
     Run a single image + text prompt through FastVLM.
