@@ -36,6 +36,8 @@ def should_merge(a: Event, b: Event, merge_threshold: float) -> bool:
       1. Same character count set (stub proxy for same characters present)
       2. Same location label (or both None)
       3. Embedding distance < (1 - merge_threshold)
+      4. Neither event closed by a hard-triggered boundary (scene_change / motion_spike)
+         -- the hard-trigger layer made a deterministic call; the merger must not undo it.
 
     Args:
         a: Earlier event.
@@ -45,7 +47,19 @@ def should_merge(a: Event, b: Event, merge_threshold: float) -> bool:
     Returns:
         bool: True if events should be merged into one.
     """
-    # 1. Same character count range (by set — stub; no real identity)
+    # 4. Never undo a hard-triggered boundary.
+    # The hard-trigger layer made a deterministic, confidence-0.85/0.95 call;
+    # the merger is for low-confidence ambiguous splits and must not reverse it.
+    _HARD_TRIGGER_REASONS = frozenset({"scene_change", "motion_spike"})
+    if b.boundary_reason in _HARD_TRIGGER_REASONS:
+        logger.debug(
+            "AESE merge: NOT merging event %d + %d -- event %d boundary_reason='%s' "
+            "is a hard-triggered boundary; merger must not override it.",
+            a.event_id, b.event_id, b.event_id, b.boundary_reason,
+        )
+        return False
+
+    # 1. Same character count range (by set -- stub; no real identity)
     # None-safe: treat None (no image data) as empty set for comparison purposes
     same_chars = (
         set(a.character_count_range or []) == set(b.character_count_range or [])
