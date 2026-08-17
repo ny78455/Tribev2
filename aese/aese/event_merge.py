@@ -45,8 +45,11 @@ def should_merge(a: Event, b: Event, merge_threshold: float) -> bool:
     Returns:
         bool: True if events should be merged into one.
     """
-    # 1. Same characters (by count set — stub; no real identity)
-    same_chars = set(a.characters) == set(b.characters)
+    # 1. Same character count range (by set — stub; no real identity)
+    # None-safe: treat None (no image data) as empty set for comparison purposes
+    same_chars = (
+        set(a.character_count_range or []) == set(b.character_count_range or [])
+    )
 
     # 2. Same location
     same_location = a.location_label == b.location_label
@@ -75,8 +78,19 @@ def merge_events(a: Event, b: Event) -> Event:
 
     duration_ms = b.end_time_ms - a.start_time_ms
 
-    # Merge character lists
-    merged_chars = list(set(a.characters) | set(b.characters))
+    # Merge character count ranges — union of both sets; None if both had no image data
+    a_range = set(a.character_count_range or [])
+    b_range = set(b.character_count_range or [])
+    merged_range_set = a_range | b_range
+    merged_char_range = sorted(merged_range_set) if merged_range_set else None
+
+    # max_characters_seen — highest face count observed across either event
+    a_max = a.max_characters_seen
+    b_max = b.max_characters_seen
+    if a_max is None and b_max is None:
+        merged_char_max = None
+    else:
+        merged_char_max = max(x for x in (a_max, b_max) if x is not None)
 
     # Location: use a's location if they agree (should be same)
     location = a.location_label
@@ -92,7 +106,7 @@ def merge_events(a: Event, b: Event) -> Event:
     confidence = min(a.confidence, b.confidence)
 
     # Summary: re-generate with merged info
-    char_count_max = max(merged_chars) if merged_chars else 0
+    char_count_max = merged_char_max
     scene_label = location if location else "unknown"
     action_label = a.summary.split(" ")[0].lower() if a.summary else "scene"
     summary = _make_summary(scene_label, action_label, char_count_max)
@@ -112,7 +126,8 @@ def merge_events(a: Event, b: Event) -> Event:
         boundary_reason=b.boundary_reason,  # use the closing boundary's reason
         event_type=a.event_type,  # preserve earlier type; classifier will overwrite
         key_frame=key_frame,
-        characters=merged_chars,
+        character_count_range=merged_char_range,
+        max_characters_seen=merged_char_max,
         location_label=location,
     )
 

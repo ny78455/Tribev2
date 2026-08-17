@@ -212,3 +212,53 @@ black placeholder frame `(64×64×3, all zeros)`.
 **NOT:** A music genre or mood classifier (no trained model).
 
 **Future work:** Replace with musicnn, MusicCNN, or fine-tuned YAMNet.
+
+---
+
+## 14. `characters` → `character_count_range` — BREAKING SCHEMA CHANGE
+
+**Date:** 2026-08-17
+
+**Decision:** The `Event.characters` field was renamed to `character_count_range`; a new
+`max_characters_seen` field was added. Both the Python dataclass and the JSON output format
+changed simultaneously.
+
+**Rationale:** `characters: [0, 1, 2]` was misread by a reviewer as "3 identified entities."
+The field has never done entity identification — it stores the *sorted unique set of per-second
+face counts* observed during the event. Renaming to `character_count_range` makes this
+unambiguous. `max_characters_seen` provides a single headline number for display.
+
+**Affected files:** `types.py`, `event_constructor.py`, `event_split.py`, `event_merge.py`,
+`cli.py`, `README.md`, all downstream test files.
+
+**Downstream impact:** Any consumer of `events.jsonl` that reads the `characters` key will
+break after this change. Update consumers to use `character_count_range` and
+`max_characters_seen`.
+
+**AESE does NOT perform character identification or re-identification.** See §4 for the full
+character detection stub inventory.
+
+---
+
+## 15. HARD-TRIGGER BOUNDARY LAYER — Deterministic override for unambiguous cues
+
+**Date:** 2026-08-17
+
+**Decision:** Two hard-trigger checks were added to `boundary/candidate_detector.py`,
+evaluated before the weighted-fusion path:
+
+1. **Camera cut** (`camera_cue == "cut"`): returns `is_boundary=True, confidence=0.95`.
+   A Module-1-confirmed hard cut is near-deterministic boundary evidence and must not be
+   diluted by an otherwise-quiet clip.
+
+2. **Sustained action transition**: returns `is_boundary=True, confidence=0.85` when the
+   last 3 features in the context buffer show [non-action, fast_action, fast_action].
+   Requires 2 consecutive fast_action seconds to avoid triggering on a single noisy
+   motion spike (e.g. a hard camera shake).
+
+**Not removed:** The weighted-fusion path still runs for ambiguous cases (gradual emotional
+shifts, topic changes, music transitions) that have no single deterministic cue.
+
+**Rationale:** The weighted sum is architecturally correct for ambiguous signals but wrong
+for unambiguous ones. A genuine hard cut should not need to out-vote a quiet clip via score
+dilution.

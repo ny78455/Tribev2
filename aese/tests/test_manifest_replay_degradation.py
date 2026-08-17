@@ -114,13 +114,13 @@ def test_aggregator_none_images_produce_none_character_count():
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — EventConstructor: all-None character_counts → characters=None, not [0]
+# Test 2 — EventConstructor: all-None character_counts → character_count_range=None, not [0]
 # ---------------------------------------------------------------------------
 
 def test_no_video_mode_characters_is_none_not_zero_list():
     """
     Regression: construct an event from TemporalFeatures that all have character_count=None.
-    Event.characters must be None and character_data_available must be False —
+    Event.character_count_range must be None and character_data_available must be False —
     NEVER [0] or [] (the original defect output).
     """
     cfg = AESEConfig()
@@ -168,9 +168,9 @@ def test_no_video_mode_characters_is_none_not_zero_list():
     assert len(events) == 1, f"Expected 1 event, got {len(events)}"
     event = events[0]
 
-    assert event.characters is None, (
-        f"Event.characters should be None (no image data), got {event.characters!r}. "
-        "This is the reported defect: characters: [0] appeared instead of null."
+    assert event.character_count_range is None, (
+        f"Event.character_count_range should be None (no image data), got {event.character_count_range!r}. "
+        "This is the reported defect: character_count_range: [0] appeared instead of null."
     )
     assert event.character_data_available is False, (
         f"Event.character_data_available should be False, got {event.character_data_available!r}"

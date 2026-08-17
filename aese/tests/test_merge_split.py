@@ -34,7 +34,8 @@ def _make_event(
         summary="test event",
         boundary_reason="scene",
         event_type="Scene",
-        characters=characters,
+        character_count_range=characters,
+        max_characters_seen=max(characters) if characters else None,
         location_label=location,
     )
 

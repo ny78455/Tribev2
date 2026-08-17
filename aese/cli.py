@@ -113,9 +113,12 @@ def _event_to_dict(event: Event, include_embedding: bool = False) -> dict:
         "boundary_reason": event.boundary_reason,
         "event_type": event.event_type,
         "location_label": event.location_label,
-        # Serialize characters as null (not []) when no image data was present.
-        # This is intentional — null means "unavailable", [] means "empty list of observations".
-        "characters": event.characters,
+        # character_count_range: sorted unique per-second face *counts* — NOT entity IDs.
+        # null means no image data was available for this event (manifest-replay without --video).
+        # e.g. [0, 1, 2] means some seconds had 0 faces, some 1, some 2 — not 3 people identified.
+        # See DECISIONS.md §4 and §14.
+        "character_count_range": event.character_count_range,
+        "max_characters_seen": event.max_characters_seen,
         "character_data_available": event.character_data_available,
     }
     if include_embedding and event.event_embedding is not None:

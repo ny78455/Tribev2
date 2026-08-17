@@ -85,10 +85,11 @@ One `Event` per line in `events.jsonl`:
   "importance": 0.31,
   "confidence": 0.87,
   "summary": "Dialogue event in indoor, 2 people present",
-  "boundary_reason": "scene",
+  "boundary_reason": "scene_change",
   "event_type": "Dialogue",
   "location_label": "indoor",
-  "characters": [1, 2]
+  "character_count_range": [1, 2],
+  "max_characters_seen": 2
 }
 ```
 
@@ -96,6 +97,14 @@ One `Event` per line in `events.jsonl`:
 > LLM-generated prose. The format is `"<action> event in <scene>, <n> people present"`.
 > This is an intentional design decision (§5.9). A real language generation step
 > is out of scope for Module 2.
+
+> **Note on `character_count_range`:** AESE does **not** perform character
+> identification or re-identification. `character_count_range` reports the
+> distinct face *counts* observed per second within the event, not distinct
+> individuals. `max_characters_seen` is the single largest count observed.
+> e.g. `[0, 1, 2]` means some seconds had 0 faces detected, some had 1, some had 2
+> — it does **not** mean 3 people were identified.
+> See DECISIONS.md §4 and §14.
 
 ---
 
