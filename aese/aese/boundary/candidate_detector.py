@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 
 _MAX_HOLD_MS = 2000.0  # Non-functional requirement: max decision delay
 
+# Action labels that constitute "fast action" for hard-trigger purposes.
+# Must match the buckets in adapters/action_stub.py.
+_ACTION_TRIGGER_LABELS: frozenset = frozenset({"fast_action"})
+
 
 class CandidateDetector:
     """
@@ -115,6 +119,48 @@ class CandidateDetector:
         threshold = self.config.boundary_threshold
         margin = self.config.confidence_margin
         curr_ts = curr.timestamp_ms
+
+        # ---------------------------------------------------------------
+        # HARD TRIGGERS — checked before the weighted-fusion path.
+        # These cover unambiguous, near-deterministic cases where a quiet
+        # surrounding clip should not dilute a confirmed boundary.
+        # The weighted-fusion path is NOT removed — it still runs for the
+        # common ambiguous case (gradual mood/topic shift, etc.).
+        # ---------------------------------------------------------------
+
+        # HARD TRIGGER 1 — real camera cut is near-deterministic boundary evidence.
+        # Module 1 flags scene_change; camera_cues adapter maps it to "cut".
+        # A confirmed hard cut must not need to out-vote an otherwise quiet clip.
+        if curr.camera_cue == "cut":
+            self._clear_hold()
+            logger.info(
+                "AESE HARD TRIGGER (scene_change) at ts=%.0f ms: "
+                "camera_cue='cut' — boundary committed at confidence=0.95",
+                curr_ts,
+            )
+            return BoundaryDecision(
+                is_boundary=True,
+                confidence=0.95,
+                dominant_signal="scene_change",
+                fused_score=fused,
+            )
+
+        # HARD TRIGGER 2 — sustained transition into fast action.
+        # Requires 2 consecutive fast_action seconds following a non-action second
+        # to avoid triggering on a single noisy motion spike (e.g. camera shake).
+        if self._check_action_transition():
+            self._clear_hold()
+            logger.info(
+                "AESE HARD TRIGGER (motion_spike) at ts=%.0f ms: "
+                "2 consecutive fast_action seconds after non-action — boundary committed at confidence=0.85",
+                curr_ts,
+            )
+            return BoundaryDecision(
+                is_boundary=True,
+                confidence=0.85,
+                dominant_signal="motion_spike",
+                fused_score=fused,
+            )
 
         # --- Well above threshold — immediate high-confidence boundary ---
         if fused >= threshold + margin:
@@ -235,6 +281,25 @@ class CandidateDetector:
             embedding_distance=emb_dist,
             prediction_error=pred_error,
         )
+
+    def _check_action_transition(self) -> bool:
+        """
+        Return True if the context buffer shows a sustained transition into fast action:
+          - The feature immediately before the 2-second window was NOT fast_action
+          - The most recent 2 features (including current) are BOTH fast_action
+
+        Uses recent(3) so we have [before, prev, curr] — the 'before' second
+        tells us the pre-transition state without looking at event_type (which
+        doesn't exist until after an event closes).
+
+        Returns False if fewer than 3 features exist in the buffer.
+        """
+        recent = self.buffer.recent(3)  # [before, prev, curr]
+        if len(recent) < 3:
+            return False
+        was_non_action = recent[0].action_label not in _ACTION_TRIGGER_LABELS
+        now_action = all(f.action_label in _ACTION_TRIGGER_LABELS for f in recent[-2:])
+        return was_non_action and now_action
 
     def _clear_hold(self) -> None:
         """Reset hold state."""
