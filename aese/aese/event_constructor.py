@@ -46,7 +46,7 @@ class EventConstructor:
         self.config = config
         self._embed_fn = event_embedding_fn
         self._keyframe_fn = keyframe_fn
-        self._event_id_counter = 0
+        self._candidate_counter = 0
 
         # Current open event state
         self._open_start_ms: Optional[float] = None
@@ -69,10 +69,6 @@ class EventConstructor:
         if self._open_start_ms is None:
             self._open_start_ms = tf.timestamp_ms
 
-        # --- Accumulate current second into open event ---
-        self._open_features.append(tf)
-        self._open_fused_scores.append((tf.timestamp_ms, decision.fused_score))
-
         # --- Check for force-split on max duration exceeded ---
         events: List[Event] = []
         duration_s = (tf.timestamp_ms - self._open_start_ms) / 1000.0
@@ -84,6 +80,8 @@ class EventConstructor:
                 self.config.maximum_event_duration_s,
             )
             # Split at highest internal fused_score point — see event_split.py logic
+            self._open_features.append(tf)
+            self._open_fused_scores.append((tf.timestamp_ms, decision.fused_score))
             split_events = self._force_split(tf.timestamp_ms)
             events.extend(split_events)
             return events
@@ -97,6 +95,14 @@ class EventConstructor:
             )
             if event is not None:
                 events.append(event)
+            # The triggering feature belongs to the NEW event
+            self._open_start_ms = tf.timestamp_ms
+            self._open_features.append(tf)
+            self._open_fused_scores.append((tf.timestamp_ms, decision.fused_score))
+        else:
+            # --- Accumulate current second into open event ---
+            self._open_features.append(tf)
+            self._open_fused_scores.append((tf.timestamp_ms, decision.fused_score))
 
         return events
 
@@ -151,8 +157,8 @@ class EventConstructor:
         ]
         key_frame = self._keyframe_fn(features)
 
-        # Importance: mean of novelty scores (higher novelty → more important)
-        importance = float(np.mean([tf.novelty_score for tf in features]))
+        # Importance: derived from peak signals within the event's span
+        importance = compute_event_importance(features, boundary_reason)
 
         # Dominant scene / action labels via majority vote
         scene_label = _majority(tf.scene_label for tf in features)
@@ -170,18 +176,19 @@ class EventConstructor:
 
         # Template-based summary — NOT LLM-generated (see README.md)
         # Attempt VLM-generated summary first if a real image is available.
+        # If VLM fails/unavailable, returns empty string, and pipeline.py will
+        # backfill it with build_template_summary using the final event_type.
         summary = _make_vlm_or_template_summary(
             features=features,
             scene_label=scene_label,
             action_label=action_label,
-            char_count_max=char_count_max,
-        )
+        ) or ""
 
         # Location label from dominant scene label
         location_label = scene_label if scene_label != "unknown" else None
 
         event = Event(
-            event_id=self._event_id_counter,
+            event_id=self._candidate_counter,
             start_time_ms=start_ms,
             end_time_ms=end_time_ms,
             duration_ms=duration_ms,
@@ -198,7 +205,7 @@ class EventConstructor:
             location_label=location_label,
         )
 
-        self._event_id_counter += 1
+        self._candidate_counter += 1
 
         # Reset open event state
         self._open_start_ms = None
@@ -261,34 +268,48 @@ def _majority(iterable) -> str:
     return counts.most_common(1)[0][0] if counts else "unknown"
 
 
-def _make_summary(scene_label: str, action_label: str, char_count: Optional[int]) -> str:
+def compute_event_importance(features: List[TemporalFeature], boundary_reason: str) -> float:
+    """
+    Importance describes how significant THIS event's content is, not how the
+    boundary that created it was detected. Use peak (not mean) motion/novelty/audio
+    within the event's own span -- a short intense event shouldn't be penalized by
+    dividing its peak by its own (possibly short) duration.
+    """
+    peak_motion = max((f.motion_score for f in features), default=0.0)
+    peak_novelty = max((f.novelty_score for f in features), default=0.0)
+    mean_audio = sum(f.audio_energy for f in features) / len(features) if features else 0.0
+    dialogue_density = sum(f.dialogue_present for f in features) / len(features) if features else 0.0
+
+    importance = (
+        0.40 * peak_motion +
+        0.25 * peak_novelty +
+        0.20 * mean_audio +
+        0.15 * dialogue_density
+    )
+    return min(max(importance, 0.0), 1.0)
+
+
+def build_template_summary(event_type: str, scene_label: str, max_characters_seen: Optional[int]) -> str:
     """
     Template-based event summary.
-    NOT LLM-generated — see README.md for explicit statement.
-    Format: "<action> event in <scene>, <n> people present"
-    char_count=None means no image data was available (manifest-replay mode).
+    MUST use the same aggregated max_characters_seen value as the JSON field.
+    Format: "<event_type> event in <scene>, <n> people present"
     """
-    action_display = {
-        "static": "Dialogue",
-        "walking": "Movement",
-        "fast_action": "Action",
-    }.get(action_label, "Scene")
-
-    if char_count is None:
+    if max_characters_seen is None:
         people_str = "character data unavailable"
-    elif char_count == 0:
+    elif max_characters_seen == 0:
         people_str = "no people detected"
     else:
-        people_str = f"{char_count} {'person' if char_count == 1 else 'people'} present"
+        people_str = f"{max_characters_seen} {'person' if max_characters_seen == 1 else 'people'} present"
 
-    return f"{action_display} event in {scene_label}, {people_str}"
+    return f"{event_type} event in {scene_label}, {people_str}"
 
 
 def _make_vlm_or_template_summary(
     features: list,
     scene_label: str,
     action_label: str,
-    char_count_max: Optional[int],
+
 ) -> str:
     """
     Generate an event summary using FastVLM if a real image is available,
@@ -328,5 +349,5 @@ def _make_vlm_or_template_summary(
                 "AESE event_constructor: VLM summary failed (%s) — using template", exc
             )
 
-    # Fallback: template-based summary
-    return _make_summary(scene_label, action_label, char_count_max)
+    # Fallback: no summary generated here, pipeline.py will fill it in
+    return None
