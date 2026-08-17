@@ -109,7 +109,12 @@ class Event:
     boundary_reason: str                 # dominant signal name
     event_type: str                      # Section 23 categories: Dialogue/Action/Transition/Scene
     key_frame: Optional[np.ndarray] = None
-    characters: Optional[List[int]] = None              # STUB: list of unique character counts seen; None = no image data
+    # RENAMED from `characters` (breaking schema change — see DECISIONS.md §14).
+    # This field reports the distinct face *counts* observed per second within the event —
+    # NOT entity identities, NOT character names, NOT re-identification.
+    # e.g. [0, 1, 2] means some seconds had 0 faces, some had 1, some had 2.
+    character_count_range: Optional[List[int]] = None  # sorted unique per-second counts; None = no image data
+    max_characters_seen: Optional[int] = None            # max(character_count_range); single headline number
     character_data_available: bool = True               # False if no seconds in this event had real images
     location_label: Optional[str] = None
 
