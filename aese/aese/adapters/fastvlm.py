@@ -31,11 +31,11 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-_MODEL_ID = "riddhimanrana/fastvlm-0.5b-captions"
+_MODEL_ID = "apple/FastVLM-0.5B"
 
 # Module-level singletons — set on first successful load
 _model = None
-_processor = None
+_tok = None
 _fastvlm_available: bool | None = None   # None = not yet attempted
 _load_lock = threading.Lock()
 
@@ -57,7 +57,7 @@ def _ensure_loaded() -> bool:
     Returns True if successfully loaded, False if unavailable.
     Thread-safe — safe to call from multiple aggregator calls concurrently.
     """
-    global _model, _processor, _fastvlm_available
+    global _model, _tok, _fastvlm_available
 
     if _fastvlm_available is not None:
         return _fastvlm_available
@@ -67,17 +67,17 @@ def _ensure_loaded() -> bool:
             return _fastvlm_available
         try:
             import torch
-            from transformers import AutoProcessor, FastVlmForConditionalGeneration
+            from transformers import AutoTokenizer, AutoModelForCausalLM
 
             dtype = torch.float16 if torch.cuda.is_available() else torch.float32
             logger.info(
                 "AESE FastVLM: loading %s (dtype=%s, device_map=auto) ...",
                 _MODEL_ID, dtype,
             )
-            _processor = AutoProcessor.from_pretrained(
+            _tok = AutoTokenizer.from_pretrained(
                 _MODEL_ID, trust_remote_code=True
             )
-            _model = FastVlmForConditionalGeneration.from_pretrained(
+            _model = AutoModelForCausalLM.from_pretrained(
                 _MODEL_ID,
                 torch_dtype=dtype,
                 device_map="auto",
@@ -126,35 +126,46 @@ def _ask(image_rgb: np.ndarray, prompt: str, max_new_tokens: int = 60) -> str:
         import torch
 
         pil_img = PILImage.fromarray(image_rgb)
+        
+        # Build chat -> render to string (not tokens) so we can place <image> exactly
         messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": prompt},
-                ],
-            }
+            {"role": "user", "content": f"<image>\n{prompt}"}
         ]
-        text = _processor.apply_chat_template(
-            messages, add_generation_prompt=True
+        rendered = _tok.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False
         )
-        inputs = _processor(
-            text=text, images=pil_img, return_tensors="pt"
-        ).to(_model.device)
+        
+        pre, post = rendered.split("<image>", 1)
+        
+        # Tokenize the text *around* the image token (no extra specials!)
+        pre_ids  = _tok(pre,  return_tensors="pt", add_special_tokens=False).input_ids
+        post_ids = _tok(post, return_tensors="pt", add_special_tokens=False).input_ids
+        
+        IMAGE_TOKEN_INDEX = -200
+        # Splice in the IMAGE token id (-200) at the placeholder position
+        img_tok = torch.tensor([[IMAGE_TOKEN_INDEX]], dtype=pre_ids.dtype)
+        input_ids = torch.cat([pre_ids, img_tok, post_ids], dim=1).to(_model.device)
+        attention_mask = torch.ones_like(input_ids, device=_model.device)
+        
+        # Preprocess image via the model's own processor
+        px = _model.get_vision_tower().image_processor(images=pil_img, return_tensors="pt")["pixel_values"]
+        px = px.to(_model.device, dtype=_model.dtype)
 
         with torch.no_grad():
             output_ids = _model.generate(
-                **inputs,
+                inputs=input_ids,
+                attention_mask=attention_mask,
+                images=px,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,   # greedy — deterministic, fast
             )
 
         # Decode only the newly generated tokens (skip the prompt)
-        input_len = inputs["input_ids"].shape[1]
+        input_len = input_ids.shape[1]
         generated_ids = output_ids[:, input_len:]
-        response = _processor.batch_decode(
-            generated_ids, skip_special_tokens=True
-        )[0].strip()
+        response = _tok.decode(
+            generated_ids[0], skip_special_tokens=True
+        ).strip()
         return response
 
     except Exception as exc:
