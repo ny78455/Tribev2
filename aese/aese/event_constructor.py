@@ -161,12 +161,12 @@ class EventConstructor:
 
         # Filter out seconds with no image data (None = not observed)
         observed_counts = [c for c in char_counts if c is not None]
-        # characters=None means the entire event had no real image data (not "zero people")
-        characters: Optional[List[int]] = sorted(set(observed_counts)) if observed_counts else None
+        # character_count_range=None means the entire event had no real image data (not "zero people")
+        character_count_range: Optional[List[int]] = sorted(set(observed_counts)) if observed_counts else None
+        max_characters_seen: Optional[int] = max(observed_counts) if observed_counts else None
         character_data_available = any(getattr(tf, "image_available", True) for tf in features)
 
-        # For the template summary use 0 if no observed data
-        char_count_max = max(observed_counts) if observed_counts else None
+        char_count_max = max_characters_seen
 
         # Template-based summary — NOT LLM-generated (see README.md)
         # Attempt VLM-generated summary first if a real image is available.
