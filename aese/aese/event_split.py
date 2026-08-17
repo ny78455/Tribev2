@@ -91,8 +91,9 @@ def split_event(
     pre_emb = pool_event_embedding(pre_features)
     pre_scene = _majority(tf.scene_label for tf in pre_features)
     pre_action = _majority(tf.action_label for tf in pre_features)
-    pre_chars = list(set(tf.character_count for tf in pre_features))
-    pre_char_max = max(pre_chars) if pre_chars else 0
+    pre_observed = [tf.character_count for tf in pre_features if tf.character_count is not None]
+    pre_char_range = sorted(set(pre_observed)) if pre_observed else None
+    pre_char_max = max(pre_observed) if pre_observed else None
     event1 = Event(
         event_id=event.event_id,
         start_time_ms=event.start_time_ms,
@@ -105,7 +106,8 @@ def split_event(
         boundary_reason="force_split_max_duration",
         event_type=event.event_type,
         key_frame=event.key_frame,
-        characters=pre_chars,
+        character_count_range=pre_char_range,
+        max_characters_seen=pre_char_max,
         location_label=pre_scene if pre_scene != "unknown" else None,
     )
 
@@ -113,8 +115,9 @@ def split_event(
     post_emb = pool_event_embedding(post_features)
     post_scene = _majority(tf.scene_label for tf in post_features)
     post_action = _majority(tf.action_label for tf in post_features)
-    post_chars = list(set(tf.character_count for tf in post_features))
-    post_char_max = max(post_chars) if post_chars else 0
+    post_observed = [tf.character_count for tf in post_features if tf.character_count is not None]
+    post_char_range = sorted(set(post_observed)) if post_observed else None
+    post_char_max = max(post_observed) if post_observed else None
     event2 = Event(
         event_id=next_event_id,
         start_time_ms=split_ts,
@@ -127,7 +130,8 @@ def split_event(
         boundary_reason="force_split_continuation",
         event_type=event.event_type,
         key_frame=None,
-        characters=post_chars,
+        character_count_range=post_char_range,
+        max_characters_seen=post_char_max,
         location_label=post_scene if post_scene != "unknown" else None,
     )
 
