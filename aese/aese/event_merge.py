@@ -50,12 +50,14 @@ def should_merge(a: Event, b: Event, merge_threshold: float) -> bool:
     # 4. Never undo a hard-triggered boundary.
     # The hard-trigger layer made a deterministic, confidence-0.85/0.95 call;
     # the merger is for low-confidence ambiguous splits and must not reverse it.
+    # Check BOTH a and b: a was closed by a hard trigger (e.g. scene_change), so
+    # merging a+b would undo that committed boundary.
     _HARD_TRIGGER_REASONS = frozenset({"scene_change", "motion_spike"})
-    if b.boundary_reason in _HARD_TRIGGER_REASONS:
+    if a.boundary_reason in _HARD_TRIGGER_REASONS or b.boundary_reason in _HARD_TRIGGER_REASONS:
         logger.debug(
-            "AESE merge: NOT merging event %d + %d -- event %d boundary_reason='%s' "
-            "is a hard-triggered boundary; merger must not override it.",
-            a.event_id, b.event_id, b.event_id, b.boundary_reason,
+            "AESE merge: NOT merging event %d + %d -- boundary_reason a='%s' b='%s' "
+            "includes a hard-triggered boundary; merger must not override it.",
+            a.event_id, b.event_id, a.boundary_reason, b.boundary_reason,
         )
         return False
 
