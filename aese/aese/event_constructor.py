@@ -88,15 +88,30 @@ class EventConstructor:
 
         # --- Confirmed boundary → close event ---
         if decision.is_boundary:
+            rewound_tf = None
+            rewound_score = None
+            # The motion_spike hard trigger fires on the 2nd consecutive fast_action frame.
+            # We rewind the 1st fast_action frame out of the closing event so it belongs to the Action event.
+            if decision.dominant_signal == "motion_spike" and len(self._open_features) > 0:
+                rewound_tf = self._open_features.pop()
+                rewound_score = self._open_fused_scores.pop()
+
+            end_time_ms = rewound_tf.timestamp_ms if rewound_tf else tf.timestamp_ms
+
             event = self._close_event(
-                end_time_ms=tf.timestamp_ms,
+                end_time_ms=end_time_ms,
                 confidence=decision.confidence,
                 boundary_reason=decision.dominant_signal,
             )
             if event is not None:
                 events.append(event)
+            
+            self._open_start_ms = end_time_ms
+            if rewound_tf:
+                self._open_features.append(rewound_tf)
+                self._open_fused_scores.append(rewound_score)
+            
             # The triggering feature belongs to the NEW event
-            self._open_start_ms = tf.timestamp_ms
             self._open_features.append(tf)
             self._open_fused_scores.append((tf.timestamp_ms, decision.fused_score))
         else:
