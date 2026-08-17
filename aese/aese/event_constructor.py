@@ -192,7 +192,8 @@ class EventConstructor:
             boundary_reason=boundary_reason,
             event_type="Scene",  # placeholder — will be overwritten by EventClassifier
             key_frame=key_frame,
-            characters=characters,
+            character_count_range=character_count_range,
+            max_characters_seen=max_characters_seen,
             character_data_available=character_data_available,
             location_label=location_label,
         )
