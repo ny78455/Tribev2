@@ -37,7 +37,7 @@ from .aggregator import FeatureAggregator
 from .boundary.candidate_detector import CandidateDetector
 from .context_buffer import ContextBuffer
 from .event_classifier import classify_event
-from .event_constructor import EventConstructor
+from .event_constructor import EventConstructor, build_template_summary
 from .event_embedding import pool_event_embedding
 from .event_graph import EventGraph
 from .event_merge import OnlineMerger
@@ -57,6 +57,17 @@ def _get_rss_mb() -> float:
         return psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
     except ImportError:
         return -1.0
+
+
+def _finalize_event(event: Event, next_id: int) -> None:
+    """Assign contiguous ID and fill missing template summary before emission."""
+    event.event_id = next_id
+    if not event.summary:
+        event.summary = build_template_summary(
+            event_type=event.event_type,
+            scene_label=event.location_label or "unknown",
+            max_characters_seen=event.max_characters_seen,
+        )
 
 
 def run(
@@ -135,6 +146,7 @@ def run(
                 # --- Online merge ---
                 finalized = merger.process(event)
                 if finalized is not None:
+                    _finalize_event(finalized, events_emitted)
                     event_graph.add_event(finalized)
                     buffer.record_boundary(finalized.end_time_ms)
                     events_emitted += 1
@@ -168,6 +180,7 @@ def run(
             event.event_type = classify_event(event, ev_feats)
             finalized = merger.process(event)
             if finalized is not None:
+                _finalize_event(finalized, events_emitted)
                 event_graph.add_event(finalized)
                 buffer.record_boundary(finalized.end_time_ms)
                 events_emitted += 1
@@ -181,6 +194,7 @@ def run(
         final_event.event_type = classify_event(final_event, ev_feats)
         finalized = merger.process(final_event)
         if finalized is not None:
+            _finalize_event(finalized, events_emitted)
             event_graph.add_event(finalized)
             events_emitted += 1
             yield finalized
@@ -189,6 +203,7 @@ def run(
     last_held = merger.finalize()
     if last_held is not None:
         last_held.event_type = classify_event(last_held, [])
+        _finalize_event(last_held, events_emitted)
         event_graph.add_event(last_held)
         events_emitted += 1
         yield last_held
