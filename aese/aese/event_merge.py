@@ -22,7 +22,7 @@ import numpy as np
 
 from .boundary.embedding_change import embedding_distance
 from .event_embedding import pool_event_embedding
-from .event_constructor import _make_summary, _majority
+from .event_constructor import build_template_summary
 from .types import AESEConfig, Event
 
 logger = logging.getLogger(__name__)
@@ -124,8 +124,7 @@ def merge_events(a: Event, b: Event) -> Event:
     # Summary: re-generate with merged info
     char_count_max = merged_char_max
     scene_label = location if location else "unknown"
-    action_label = a.summary.split(" ")[0].lower() if a.summary else "scene"
-    summary = _make_summary(scene_label, action_label, char_count_max)
+    summary = build_template_summary(a.event_type, scene_label, char_count_max)
 
     # Keyframe: prefer the one with higher novelty (take a's keyframe for simplicity)
     key_frame = a.key_frame if a.key_frame is not None else b.key_frame
