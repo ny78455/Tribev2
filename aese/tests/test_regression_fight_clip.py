@@ -275,3 +275,57 @@ def test_character_count_range_not_misleading(fight_clip_events):
             assert mcs == max(ccr), (
                 f"max_characters_seen={mcs} != max(character_count_range)={max(ccr)}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Test 5 -- Event IDs are contiguous
+# ---------------------------------------------------------------------------
+
+def test_event_ids_contiguous(fight_clip_events):
+    assert [e.event_id for e in fight_clip_events] == list(range(len(fight_clip_events))), (
+        f"Event IDs are not contiguous: {[e.event_id for e in fight_clip_events]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 6 -- No gaps between events
+# ---------------------------------------------------------------------------
+
+def test_no_gaps_between_events(fight_clip_events):
+    for i in range(len(fight_clip_events) - 1):
+        assert fight_clip_events[i].end_time_ms == fight_clip_events[i+1].start_time_ms, (
+            f"Gap between event {fight_clip_events[i].event_id} (ends {fight_clip_events[i].end_time_ms}) and "
+            f"event {fight_clip_events[i+1].event_id} (starts {fight_clip_events[i+1].start_time_ms})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 7 -- Summary and max_characters_seen agree
+# ---------------------------------------------------------------------------
+
+def test_summary_and_max_characters_agree(fight_clip_events):
+    for e in fight_clip_events:
+        if e.max_characters_seen:
+            assert str(e.max_characters_seen) in e.summary, (
+                f"Summary '{e.summary}' does not contain expected count {e.max_characters_seen}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Test 8 -- Action event outranks dialogue in importance
+# ---------------------------------------------------------------------------
+
+def test_action_event_outranks_dialogue_in_importance(fight_clip_events):
+    action_events = [e for e in fight_clip_events if e.event_type == "Action"]
+    dialogue_events = [e for e in fight_clip_events if e.event_type == "Dialogue"]
+    
+    assert action_events, "Expected at least one Action event"
+    assert dialogue_events, "Expected at least one Dialogue event"
+    
+    max_action_importance = max(e.importance for e in action_events)
+    max_dialogue_importance = max(e.importance for e in dialogue_events)
+    
+    assert max_action_importance > max_dialogue_importance, (
+        f"Action event importance {max_action_importance:.4f} does not strictly outrank "
+        f"Dialogue importance {max_dialogue_importance:.4f}"
+    )
