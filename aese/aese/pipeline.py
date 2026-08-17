@@ -94,8 +94,16 @@ def run(
     event_features: dict = {}  # event_id → List[TemporalFeature]
     current_event_features: List = []
 
-    logger.info("AESE: pipeline started (buffer=%.0fs, threshold=%.2f)",
-                config.buffer_seconds, config.boundary_threshold)
+    logger.info(
+        "AESE: pipeline started (buffer=%.0fs, threshold=%.2f, max_event_duration=%.0fs). "
+        "Hard-trigger boundaries: camera_cut=0.95, action_transition=0.85. "
+        "Force-split safety net fires at %.0fs.",
+        config.buffer_seconds,
+        config.boundary_threshold,
+        config.maximum_event_duration_s,
+        config.maximum_event_duration_s,
+    )
+
 
     for fp in frame_packet_stream:
         loop_start = time.perf_counter()
