@@ -82,7 +82,7 @@ def _fight_clip_stream() -> Iterator[FramePacket]:
             scene_change=False,
             audio_energy=0.10,
             novelty_score=0.10,
-            subtitle_text="Character A says something." if s % 3 == 0 else None,
+            subtitle_text="Character A says something." if s % 2 == 0 else None,
         ))
 
     # Segment 2: 30-49s -- fast_action / fight
