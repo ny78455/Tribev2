@@ -148,7 +148,7 @@ def _heuristic_scene_label(image: np.ndarray) -> str:
     """
     Bare-minimum heuristic for scene label when VLM and CLIP are unavailable.
     Uses color temperature (blue channel ratio for sky/outdoor, warm tones for indoor).
-    Not reliable -- only a last-resort fallback. Always returns a str, never None.
+    Not reliable -- only a last-resort fallback. Always returns a label in SCENE_LABELS.
     """
     try:
         h, w = image.shape[:2]
@@ -156,12 +156,11 @@ def _heuristic_scene_label(image: np.ndarray) -> str:
         mean_r = float(top[:, :, 0].mean())
         mean_b = float(top[:, :, 2].mean())
         if mean_b > mean_r + 15 and mean_b > 80:
-            return "outdoor field"
-        if mean_r > mean_b + 10:
-            return "indoor"
+            return "outdoor field"  # blue top third => sky visible
         brightness = float(image.mean())
         if brightness < 30:
-            return "unknown"  # too dark to classify (previously "nighttime", now removed from vocab)
-        return "indoor"
+            return "unknown"        # too dark to classify safely
+        # Generic warm/neutral interior -- use "office" as the nearest non-specific label
+        return "office"
     except Exception:
         return "unknown"
