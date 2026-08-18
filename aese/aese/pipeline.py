@@ -1,23 +1,25 @@
 """
 aese/pipeline.py
-Pipeline Orchestrator — wires all AESE modules together.
+Pipeline Orchestrator -- wires all AESE modules together.
 
 Streaming generator:
     run(frame_packet_stream, config) -> Iterator[Event]
 
 Architecture:
-    FramePackets → FeatureAggregator → ContextBuffer
-                → CandidateDetector (signals + fusion + confidence)
-                → EventConstructor (min/max duration)
-                → OnlineMerger
-                → EventClassifier
-                → yield Event
+    FramePackets -> FeatureAggregator -> ContextBuffer
+                -> CandidateDetector (signals + fusion + confidence)
+                -> EventConstructor (min/max duration)
+                -> OnlineMerger
+                -> EventClassifier
+                -> generate_summary()   <-- ONCE per finalized event, off the hot path
+                -> yield Event
 
 Non-functional requirements (§8):
     - Latency: <100ms per boundary decision (logged)
-    - Memory: rolling buffer — never holds full movie in RAM
+      NOTE: generate_summary() is intentionally NOT inside this loop.
+    - Memory: rolling buffer -- never holds full movie in RAM
     - Max delay: 2s hold for confidence (enforced in CandidateDetector)
-    - Streaming: no future frames peeked — pure online processing
+    - Streaming: no future frames peeked -- pure online processing
 
 Modes:
     - Live mode: receives FramePacket objects with .image arrays (from ASVL)
@@ -42,6 +44,7 @@ from .event_embedding import pool_event_embedding
 from .event_graph import EventGraph
 from .event_merge import OnlineMerger
 from .keyframe import select_keyframe
+from .summary import generate_summary, _summary_call_counter
 from .types import AESEConfig, Event, FramePacket
 
 logger = logging.getLogger(__name__)
@@ -60,9 +63,30 @@ def _get_rss_mb() -> float:
 
 
 def _finalize_event(event: Event, next_id: int) -> None:
-    """Assign contiguous ID and fill missing template summary before emission."""
+    """
+    Assign contiguous ID and generate the final summary for this event.
+
+    Summary generation order:
+      1. generate_summary() -- calls VLM if available + real image, with validation.
+         Internally falls back to build_template_summary() on any failure.
+      2. If event.summary is still empty (e.g. generate_summary raised unexpectedly),
+         build_template_summary() is the guaranteed safety net.
+
+    This function runs AFTER merge/classify -- once per finalized event, never
+    in the per-second boundary-detection loop.
+    """
     event.event_id = next_id
+    # Resolve keyframe image: representative_image from key_frame proxy is an embedding,
+    # not a pixel array. We pass None here; generate_summary handles no-image gracefully
+    # and falls through to the template. In live mode with real pixel data, the
+    # representative_image on TemporalFeature would be used (future extension).
+    keyframe_image = None
+    if event.key_frame is not None and hasattr(event.key_frame, 'shape') and event.key_frame.ndim == 3:
+        # key_frame is a real pixel array (live mode) -- use it for VLM summary
+        keyframe_image = event.key_frame
+    event.summary = generate_summary(event, keyframe_image)
     if not event.summary:
+        # Guaranteed safety net -- should never be reached since generate_summary always returns str
         event.summary = build_template_summary(
             event_type=event.event_type,
             scene_label=event.location_label or "unknown",
