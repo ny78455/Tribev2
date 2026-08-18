@@ -7,7 +7,9 @@ Responsibilities:
   - On confirmed boundary: closes the current event, opens a new one
   - Enforces minimum_event_duration_s=5 (tags short events for merge)
   - Enforces maximum_event_duration_s=300 (force-splits at highest internal fused score)
-  - Generates template-based summary (NOT LLM-generated — see README.md)
+  - Generates template-based summary placeholder (NOT LLM-generated — see README.md)
+    The actual summary (template or VLM) is filled in by pipeline.py AFTER full
+    finalization (merge/split/classify), never here in the hot path.
   - Collects all TemporalFeatures and fused scores in the current event window
 """
 from __future__ import annotations
@@ -189,15 +191,12 @@ class EventConstructor:
 
         char_count_max = max_characters_seen
 
-        # Template-based summary — NOT LLM-generated (see README.md)
-        # Attempt VLM-generated summary first if a real image is available.
-        # If VLM fails/unavailable, returns empty string, and pipeline.py will
-        # backfill it with build_template_summary using the final event_type.
-        summary = _make_vlm_or_template_summary(
-            features=features,
-            scene_label=scene_label,
-            action_label=action_label,
-        ) or ""
+        # Summary: empty string placeholder.
+        # pipeline.py fills this in AFTER full finalization (merge/split/classify)
+        # by calling aese.summary.generate_summary() once per finalized event.
+        # This keeps the hot path (<100ms/decision) free of any VLM call.
+        # See DECISIONS.md §17.
+        summary = ""
 
         # Location label from dominant scene label
         location_label = scene_label if scene_label != "unknown" else None
@@ -318,51 +317,3 @@ def build_template_summary(event_type: str, scene_label: str, max_characters_see
         people_str = f"{max_characters_seen} {'person' if max_characters_seen == 1 else 'people'} present"
 
     return f"{event_type} event in {scene_label}, {people_str}"
-
-
-def _make_vlm_or_template_summary(
-    features: list,
-    scene_label: str,
-    action_label: str,
-
-) -> str:
-    """
-    Generate an event summary using FastVLM if a real image is available,
-    otherwise fall back to the template-based _make_summary.
-
-    VLM path:
-      - Selects the feature with the lowest motion_score (sharpest frame)
-        that also has a representative_image (real pixel data).
-      - Calls adapters.fastvlm.caption_event with the image + context.
-      - Returns the VLM caption if non-empty.
-
-    Fallback (no image / VLM unavailable):
-      - Returns the existing template-based summary string.
-    """
-    # Find the sharpest feature with a real image
-    candidates = [
-        tf for tf in features
-        if getattr(tf, "representative_image", None) is not None
-    ]
-    if candidates:
-        keyframe_feature = min(candidates, key=lambda tf: tf.motion_score)
-        image = keyframe_feature.representative_image
-        dialogue_text = next(
-            (tf.dialogue_text for tf in reversed(features) if tf.dialogue_text),
-            None,
-        )
-        try:
-            from .adapters.fastvlm import caption_event
-            vlm_summary = caption_event(image, scene_label, action_label, dialogue_text)
-            if vlm_summary:
-                logger.debug(
-                    "AESE event_constructor: VLM summary generated (%d chars)", len(vlm_summary)
-                )
-                return vlm_summary
-        except Exception as exc:
-            logger.debug(
-                "AESE event_constructor: VLM summary failed (%s) — using template", exc
-            )
-
-    # Fallback: no summary generated here, pipeline.py will fill it in
-    return None
