@@ -1,29 +1,22 @@
 """
 aese/adapters/character_stub.py
-Character presence adapter.
+Character presence adapter — deterministic OpenCV-only path.
 
-V3: Multi-path OpenCV fallback chain that handles both OpenCV 4 and OpenCV 5.
-  - OpenCV 5+: CascadeClassifier was removed; uses FaceDetectorYN (YuNet ONNX,
-    bundled under models/yunet/) — handles frontal + profile faces natively.
-  - OpenCV 4: Uses Haar cascade (frontal + profile), searched in cv2.data
-    first, then repo-local models/haarcascades/ for headless installs.
-  - DNN SSD ResNet10 (Caffe): OpenCV 4 only (readNetFromCaffe removed in OCV5).
+V4 (Fix 1 — 2026-08-18): Removed FastVLM (generative) primary path.
+Character counting is a classification/detection task, not a generation task.
+The VLM path was causing max_characters_seen=0 across all events because
+count_people() returned filler text that the regex parser could not parse as
+an integer. See DECISIONS.md §16.
 
-V2: Primary path uses riddhimanrana/fastvlm-0.5b-captions (FastVLM) to count
-people in a frame. This replaces the OpenCV face-detection stub for frames
-where the VLM model is available, giving substantially better recall on
-partial faces, side profiles, and low-resolution frames.
-
-Fallback chain:
-  1. FastVLM (riddhimanrana/fastvlm-0.5b-captions) — primary
-  2. OpenCV FaceDetectorYN / YuNet ONNX (OpenCV 5+)
-  3. OpenCV DNN SSD ResNet10 (OpenCV 4, Caffe model files present)
-  4. OpenCV Haar cascade frontal + profile (OpenCV 4, bundled XMLs)
-  5. 0 — last resort
+Detector chain (in priority order):
+  1. OpenCV FaceDetectorYN / YuNet ONNX (OpenCV 5+)
+  2. OpenCV DNN SSD ResNet10 (OpenCV 4, Caffe model files present)
+  3. OpenCV Haar cascade frontal + profile (OpenCV 4, bundled XMLs)
+  4. 0 — last resort (logs a warning; see _init_detector)
 
 No character identity, no tracking, no names, no re-identification.
 This is an intentional stub per the contract (§1.2, §5.0).
-See DECISIONS.md §4.
+See DECISIONS.md §4, §16.
 
 Future work: replace with a proper face-tracking + re-ID pipeline.
 """
@@ -174,8 +167,8 @@ def get_effective_detector_chain() -> str:
     """
     Return a short string describing the active face detection chain.
 
-    Possible values:
-      "fastvlm"                   — FastVLM model is loaded and active
+    Possible values (FastVLM is intentionally NOT a valid return value —
+    character counting must never route through a generative model):
       "yunet"                     — OpenCV FaceDetectorYN (YuNet ONNX, OpenCV 5+)
       "dnn"                       — OpenCV DNN SSD ResNet10 (OpenCV 4)
       "opencv_haar_frontal+profile" — Haar frontal + profile cascades (OpenCV 4)
@@ -184,16 +177,8 @@ def get_effective_detector_chain() -> str:
 
     Triggers detector initialisation if not yet done.
     """
-    # Check FastVLM first — it is the primary path
-    try:
-        from .fastvlm import _fastvlm_available, _ensure_loaded
-        _ensure_loaded()
-        if _fastvlm_available:
-            return "fastvlm"
-    except Exception:
-        pass
-
-    # Trigger OpenCV initialisation so _detector_mode is populated
+    # Always use the deterministic OpenCV chain — never FastVLM for character counting.
+    # See DECISIONS.md §16 for why the generative path was removed.
     _init_detector()
     return _detector_mode
 
@@ -247,9 +232,15 @@ def count_characters(image: Optional[np.ndarray]) -> int:
     """
     Count the number of people visible in a frame.
 
-    Primary path: FastVLM (riddhimanrana/fastvlm-0.5b-captions) prompts the VLM
-    to count people — handles partial faces, side profiles, and low resolution.
-    Fallback: OpenCV YuNet (OpenCV 5+) / DNN SSD / Haar cascade (OpenCV 4).
+    DETERMINISTIC CLASSIFIER PATH ONLY — no generative model, no free-text parsing.
+    Character counting must always return an int directly from a detector, never by
+    parsing a VLM's prose response. See DECISIONS.md §16.
+
+    Detector chain (in priority order):
+      1. OpenCV FaceDetectorYN / YuNet ONNX (OpenCV 5+)
+      2. OpenCV DNN SSD ResNet10 (OpenCV 4)
+      3. OpenCV Haar cascade frontal+profile (OpenCV 4)
+      4. 0 (last resort — no detector available)
 
     Args:
         image: HxWx3 RGB numpy array, or None (returns 0).
@@ -260,16 +251,7 @@ def count_characters(image: Optional[np.ndarray]) -> int:
     if image is None or image.max() < 5:
         return 0
 
-    # --- Path 1: FastVLM ---
-    try:
-        from .fastvlm import count_people, _fastvlm_available
-        count = count_people(image)
-        if _fastvlm_available:
-            return count
-    except Exception as exc:
-        logger.debug("AESE character_stub: FastVLM path failed: %s — trying OpenCV", exc)
-
-    # --- Path 2/3/4: OpenCV face detector ---
+    # Deterministic OpenCV detector — no VLM, no free-text parsing.
     return _opencv_count_characters(image)
 
 
