@@ -35,6 +35,7 @@ from typing import Iterator, List, Optional
 
 import numpy as np
 
+from .adapters.character_cluster import CharacterClusterer, get_character_labels_for_event
 from .aggregator import FeatureAggregator
 from .boundary.candidate_detector import CandidateDetector
 from .context_buffer import ContextBuffer
@@ -62,9 +63,14 @@ def _get_rss_mb() -> float:
         return -1.0
 
 
-def _finalize_event(event: Event, next_id: int) -> None:
+def _finalize_event(
+    event: Event,
+    next_id: int,
+    clusterer: Optional["CharacterClusterer"] = None,
+    event_features_map: Optional[dict] = None,
+) -> None:
     """
-    Assign contiguous ID and generate the final summary for this event.
+    Assign contiguous ID, assign character labels, and generate the final summary.
 
     Summary generation order:
       1. generate_summary() -- calls VLM if available + real image, with validation.
@@ -72,14 +78,23 @@ def _finalize_event(event: Event, next_id: int) -> None:
       2. If event.summary is still empty (e.g. generate_summary raised unexpectedly),
          build_template_summary() is the guaranteed safety net.
 
+    Character labeling:
+      - If clusterer is provided, resolves face embeddings from the event's source
+        TemporalFeatures into anonymous labels ("Person A", "Person B", ...).
+      - Empty list if clustering is unavailable (manifest-replay mode, no --video).
+
     This function runs AFTER merge/classify -- once per finalized event, never
     in the per-second boundary-detection loop.
     """
     event.event_id = next_id
-    # Resolve keyframe image: representative_image from key_frame proxy is an embedding,
-    # not a pixel array. We pass None here; generate_summary handles no-image gracefully
-    # and falls through to the template. In live mode with real pixel data, the
-    # representative_image on TemporalFeature would be used (future extension).
+
+    # --- Character clustering (Fix 4) ---
+    if clusterer is not None and event_features_map is not None:
+        feats = event_features_map.get(event.event_id, [])
+        face_embeddings_per_second = [getattr(tf, "face_embeddings", []) for tf in feats]
+        event.character_labels = get_character_labels_for_event(face_embeddings_per_second, clusterer)
+
+    # --- Summary generation ---
     keyframe_image = None
     if event.key_frame is not None and hasattr(event.key_frame, 'shape') and event.key_frame.ndim == 3:
         # key_frame is a real pixel array (live mode) -- use it for VLM summary
@@ -119,6 +134,7 @@ def run(
     )
     merger = OnlineMerger(config)
     event_graph = EventGraph()
+    clusterer = CharacterClusterer()  # Fix 4: one per video run, not per event
 
     prev_feature = None
     decision_latencies_ms: List[float] = []
@@ -170,7 +186,7 @@ def run(
                 # --- Online merge ---
                 finalized = merger.process(event)
                 if finalized is not None:
-                    _finalize_event(finalized, events_emitted)
+                    _finalize_event(finalized, events_emitted, clusterer, event_features)
                     event_graph.add_event(finalized)
                     buffer.record_boundary(finalized.end_time_ms)
                     events_emitted += 1
@@ -204,7 +220,7 @@ def run(
             event.event_type = classify_event(event, ev_feats)
             finalized = merger.process(event)
             if finalized is not None:
-                _finalize_event(finalized, events_emitted)
+                _finalize_event(finalized, events_emitted, clusterer, event_features)
                 event_graph.add_event(finalized)
                 buffer.record_boundary(finalized.end_time_ms)
                 events_emitted += 1
@@ -218,7 +234,7 @@ def run(
         final_event.event_type = classify_event(final_event, ev_feats)
         finalized = merger.process(final_event)
         if finalized is not None:
-            _finalize_event(finalized, events_emitted)
+            _finalize_event(finalized, events_emitted, clusterer, event_features)
             event_graph.add_event(finalized)
             events_emitted += 1
             yield finalized
@@ -227,7 +243,7 @@ def run(
     last_held = merger.finalize()
     if last_held is not None:
         last_held.event_type = classify_event(last_held, [])
-        _finalize_event(last_held, events_emitted)
+        _finalize_event(last_held, events_emitted, clusterer, event_features)
         event_graph.add_event(last_held)
         events_emitted += 1
         yield last_held
