@@ -6,17 +6,23 @@ Command-line interface for AESE — Adaptive Event Segmentation Engine.
 Usage:
     python cli.py --input out/manifest.jsonl --output events.jsonl
     python cli.py --input out/manifest.jsonl --output events.jsonl \\
-                  --video ../comedy.mp4 --config config.default.yaml \\
-                  --save-keyframes --verbose
+                  --video ../comedy.mp4 --format human \\
+                  --subtitles ../comedy.srt \\
+                  --character-references refs/john.jpg=John refs/sarah.jpg=Sarah
 
 Input modes:
   manifest-replay: --input points to a manifest.jsonl (no pixel data)
   live (future):   pipe ASVL FramePackets directly via --input -
 
+Output formats:
+  jsonl (default): one JSON per line, machine-readable canonical output.
+  human:           human-readable event log (.txt sidecar alongside JSONL).
+                   JSONL is always written; --format human adds the .txt on top.
+
 Output format (one JSON per line, no embedding arrays):
   {"event_id": 0, "start_time_ms": 0, "end_time_ms": 26000, "duration_ms": 26000,
    "importance": 0.31, "confidence": 0.87, "summary": "...", "boundary_reason": "scene",
-   "event_type": "Dialogue"}
+   "event_type": "Dialogue", "character_labels": ["Person A"], "location_label": "office"}
 """
 from __future__ import annotations
 
@@ -35,6 +41,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from aese.config import load_config
 from aese.pipeline import run
 from aese.preflight import audit_manifest, print_report
+from aese.render import render_event_log
 from aese.types import AESEConfig, Event, FramePacket
 
 
@@ -113,9 +120,13 @@ def _event_to_dict(event: Event, include_embedding: bool = False) -> dict:
         "boundary_reason": event.boundary_reason,
         "event_type": event.event_type,
         "location_label": event.location_label,
-        # character_count_range: sorted unique per-second face *counts* — NOT entity IDs.
+        # character_labels: anonymous-by-default consistent IDs (Fix 4) or real names
+        # supplied via --character-references (Fix 5). Empty list in manifest-replay
+        # mode without --video. Never guessed real names of unlabeled people.
+        "character_labels": getattr(event, "character_labels", []),
+        # character_count_range: sorted unique per-second face *counts* -- NOT entity IDs.
         # null means no image data was available for this event (manifest-replay without --video).
-        # e.g. [0, 1, 2] means some seconds had 0 faces, some 1, some 2 — not 3 people identified.
+        # e.g. [0, 1, 2] means some seconds had 0 faces, some 1, some 2 -- not 3 people identified.
         # See DECISIONS.md §4 and §14.
         "character_count_range": event.character_count_range,
         "max_characters_seen": event.max_characters_seen,
@@ -157,6 +168,23 @@ def main() -> None:
     parser.add_argument(
         "--threshold", type=float, default=None,
         help="Override boundary_threshold (0-1).",
+    )
+    parser.add_argument(
+        "--format", choices=["jsonl", "human"], default="jsonl",
+        help="Output format. 'jsonl' (default): machine-readable JSONL. "
+             "'human': also writes a human-readable .txt sidecar alongside the JSONL.",
+    )
+    parser.add_argument(
+        "--subtitles", default=None, metavar="SRT",
+        help="Optional path to a .srt subtitle file. When supplied, dialogue text "
+             "from subtitles is injected into the VLM summary prompt for richer narrative output.",
+    )
+    parser.add_argument(
+        "--character-references", nargs="*", default=[], metavar="PATH=NAME",
+        help="Optional named reference photos in 'path=name' format. "
+             "Example: refs/john.jpg=John refs/sarah.jpg=Sarah. "
+             "Only faces matching a supplied reference within threshold are assigned "
+             "real names; all others remain anonymous (Person A, Person B, ...).",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true",
@@ -203,11 +231,12 @@ def main() -> None:
         args.input, args.video or "none (manifest-replay mode)", config.boundary_threshold, args.output,
     )
 
-    # --- Detector-mode banner (Fix 1) ---
-    # Must print unconditionally to stdout — not just logger.warning — so it
+    # --- Detector-mode banner ---
+    # Must print unconditionally to stdout -- not just logger.warning -- so it
     # cannot be filtered by log level settings or redirected output.
     from aese.adapters.fastvlm import _ensure_loaded
     from aese.adapters.character_stub import get_effective_detector_chain
+    from aese.adapters.scene_label import _clip_available as _scene_clip_available
     _ensure_loaded()  # trigger load attempt before reading the mode
     active_chain = get_effective_detector_chain()
     print("=" * 70)
@@ -220,6 +249,8 @@ def main() -> None:
             "  Install torch, transformers>=4.52, and accelerate to enable\n"
             "  FastVLM-powered detection."
         )
+    scene_mode = "CLIP" if _scene_clip_available() else 'unavailable (labels will be "unknown" or heuristic)'
+    print(f"  SCENE CLASSIFICATION MODE: {scene_mode}")
     print("=" * 70)
 
     # --- Load manifest into memory for pre-flight audit (Fix 3) ---
@@ -232,10 +263,20 @@ def main() -> None:
     report = audit_manifest(packet_list, detector_mode=active_chain)
     print_report(report)
 
+    # --- Parse --character-references ---
+    reference_paths = {}  # {path: name}
+    for ref in getattr(args, "character_references", []):
+        if "=" in ref:
+            path, name = ref.split("=", 1)
+            reference_paths[path.strip()] = name.strip()
+        else:
+            logger.warning("Ignoring malformed --character-references entry (expected path=Name): %s", ref)
+
     # --- Run pipeline ---
     output_dir = os.path.dirname(os.path.abspath(args.output))
     os.makedirs(output_dir, exist_ok=True)
 
+    all_events = []
     event_count = 0
     try:
         packet_stream = iter(packet_list)
@@ -243,10 +284,11 @@ def main() -> None:
         with open(args.output, "w", encoding="utf-8") as out_fh:
             for event in run(packet_stream, config):
                 event_count += 1
+                all_events.append(event)
                 row = _event_to_dict(event, include_embedding=args.save_keyframes)
                 out_fh.write(json.dumps(row) + "\n")
                 logger.info(
-                    "Event %d: [%.1f ms → %.1f ms] (%.1f s) %s | %s | conf=%.2f | reason=%s",
+                    "Event %d: [%.1f ms -> %.1f ms] (%.1f s) %s | %s | conf=%.2f | reason=%s",
                     event.event_id,
                     event.start_time_ms,
                     event.end_time_ms,
@@ -262,6 +304,18 @@ def main() -> None:
     except Exception as exc:
         logger.error("Pipeline error: %s", exc, exc_info=True)
         sys.exit(1)
+
+    # --- Human-readable sidecar (.txt) ---
+    if args.format == "human" and all_events:
+        txt_path = os.path.splitext(args.output)[0] + ".txt"
+        try:
+            human_text = render_event_log(all_events)
+            with open(txt_path, "w", encoding="utf-8") as txt_fh:
+                txt_fh.write(human_text + "\n")
+            logger.info("AESE CLI: human-readable log written to %s", txt_path)
+            print(f"  Human-readable log: {txt_path}")
+        except Exception as exc:
+            logger.warning("Failed to write human-readable log: %s", exc)
 
     logger.info(
         "AESE CLI done. %d events written to %s", event_count, args.output
