@@ -24,25 +24,35 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Fixed label set — must stay in sync with fastvlm.py._SCENE_LABELS
-_SCENE_LABELS = [
-    "indoor",
-    "outdoor",
-    "vehicle interior",
-    "street",
-    "nature",
-    "building exterior",
-    "office",
-    "restaurant",
-    "kitchen",
-    "bedroom",
-    "nighttime",
+# Fixed label set -- must stay in sync with fastvlm.py._SCENE_LABELS
+# Exported as SCENE_LABELS (public) for tests and CLI banner.
+# See Fix 3 for expanded vocabulary.
+SCENE_LABELS = [
+    "kitchen", "living room", "bedroom", "office", "hallway",
+    "street", "village", "forest", "beach", "outdoor field",
+    "vehicle interior", "rooftop", "restaurant", "stage/studio",
     "unknown",
 ]
+# Backward-compatible private alias used internally
+_SCENE_LABELS = SCENE_LABELS
 
 # CLIP text features cached at first call (fallback path)
 _clip_text_features = None
 _clip_labels_loaded = False
+
+
+def _clip_available() -> bool:
+    """
+    Return True if the CLIP model is loaded and available for scene classification.
+
+    Does NOT trigger a load attempt -- this is a safe read of the current state.
+    Used by cli.py for the SCENE CLASSIFICATION MODE startup banner.
+    """
+    try:
+        from .embedding import _clip_available as _emb_clip_available
+        return bool(_emb_clip_available)
+    except Exception:
+        return False
 
 
 def _load_clip_text_features() -> bool:
@@ -88,7 +98,8 @@ def label_scene(image: np.ndarray) -> str:
                Black frames (image.max() < 5) short-circuit to "unknown".
 
     Returns:
-        str: One of the labels in _SCENE_LABELS. Returns "unknown" on any failure.
+        str: One of the labels in SCENE_LABELS. ALWAYS returns a str, never None.
+             Returns "unknown" on any failure.
     """
     if image is None or image.max() < 5:
         return "unknown"
@@ -135,9 +146,9 @@ def label_scene(image: np.ndarray) -> str:
 
 def _heuristic_scene_label(image: np.ndarray) -> str:
     """
-    # STUB: Bare-minimum heuristic for scene label when VLM and CLIP are unavailable.
+    Bare-minimum heuristic for scene label when VLM and CLIP are unavailable.
     Uses color temperature (blue channel ratio for sky/outdoor, warm tones for indoor).
-    Not reliable — only a last-resort fallback.
+    Not reliable -- only a last-resort fallback. Always returns a str, never None.
     """
     try:
         h, w = image.shape[:2]
@@ -145,12 +156,12 @@ def _heuristic_scene_label(image: np.ndarray) -> str:
         mean_r = float(top[:, :, 0].mean())
         mean_b = float(top[:, :, 2].mean())
         if mean_b > mean_r + 15 and mean_b > 80:
-            return "outdoor"
+            return "outdoor field"
         if mean_r > mean_b + 10:
             return "indoor"
         brightness = float(image.mean())
         if brightness < 30:
-            return "nighttime"
+            return "unknown"  # too dark to classify (previously "nighttime", now removed from vocab)
         return "indoor"
     except Exception:
         return "unknown"
