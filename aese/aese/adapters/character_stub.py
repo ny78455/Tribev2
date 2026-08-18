@@ -329,3 +329,90 @@ def _opencv_count_characters(image: np.ndarray) -> int:
     except Exception as exc:
         logger.debug("AESE character_stub: detection error: %s", exc)
         return 0
+
+
+def detect_faces_with_boxes(
+    image: Optional[np.ndarray],
+) -> List[Tuple[int, int, int, int]]:
+    """
+    Detect faces and return their bounding boxes as (x, y, w, h) tuples.
+
+    Used by character_cluster.py to crop face regions for CLIP embedding.
+    Reuses the same detector chain as count_characters() -- no duplicate
+    detector state or re-initialization.
+
+    Args:
+        image: HxWx3 RGB numpy array, or None (returns []).
+
+    Returns:
+        List of (x, y, w, h) bounding boxes. Empty list if no faces found,
+        no detector available, or image is None/black.
+    """
+    if image is None or image.max() < 5:
+        return []
+
+    _init_detector()
+    try:
+        bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+        # ---- YuNet (OpenCV 5+) -------------------------------------------
+        if _detector_mode == "yunet" and _yunet is not None:
+            h, w = bgr.shape[:2]
+            _yunet.setInputSize((w, h))
+            _, results = _yunet.detect(bgr)
+            if results is None:
+                return []
+            boxes = []
+            for det in results:
+                if float(det[-1]) >= _YUNET_CONF_THRESHOLD:
+                    x, y, bw, bh = int(det[0]), int(det[1]), int(det[2]), int(det[3])
+                    boxes.append((x, y, bw, bh))
+            return boxes
+
+        # ---- DNN SSD ResNet10 (OpenCV 4) ----------------------------------
+        elif _detector_mode == "dnn" and _face_net is not None:
+            h, w = bgr.shape[:2]
+            blob = cv2.dnn.blobFromImage(
+                cv2.resize(bgr, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0)
+            )
+            _face_net.setInput(blob)
+            detections = _face_net.forward()
+            boxes = []
+            for i in range(detections.shape[2]):
+                if float(detections[0, 0, i, 2]) > _DNN_CONF_THRESHOLD:
+                    x1 = int(detections[0, 0, i, 3] * w)
+                    y1 = int(detections[0, 0, i, 4] * h)
+                    x2 = int(detections[0, 0, i, 5] * w)
+                    y2 = int(detections[0, 0, i, 6] * h)
+                    boxes.append((x1, y1, x2 - x1, y2 - y1))
+            return boxes
+
+        # ---- Haar cascade (OpenCV 4) --------------------------------------
+        elif _detector_mode in ("opencv_haar_frontal+profile", "opencv_haar_frontal"):
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+            gray = cv2.equalizeHist(gray)
+
+            raw_front = _haar_frontal.detectMultiScale(
+                gray, scaleFactor=1.05, minNeighbors=4, minSize=(20, 20)
+            )
+            faces_front = list(map(tuple, raw_front)) if len(raw_front) > 0 else []
+
+            faces_profile: List[Tuple[int, int, int, int]] = []
+            if _haar_profile is not None:
+                raw_left = _haar_profile.detectMultiScale(
+                    gray, scaleFactor=1.05, minNeighbors=4, minSize=(20, 20)
+                )
+                faces_profile += list(map(tuple, raw_left)) if len(raw_left) > 0 else []
+
+            # Dedup and return boxes (not count)
+            all_boxes = list(faces_front) + list(faces_profile)
+            kept = []
+            for box in all_boxes:
+                if not any(_iou(box, k) > 0.3 for k in kept):
+                    kept.append(box)
+            return kept
+
+    except Exception as exc:
+        logger.debug("AESE character_stub: detect_faces_with_boxes error: %s", exc)
+
+    return []
