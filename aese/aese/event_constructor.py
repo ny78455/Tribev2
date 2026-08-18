@@ -317,3 +317,22 @@ def build_template_summary(event_type: str, scene_label: str, max_characters_see
         people_str = f"{max_characters_seen} {'person' if max_characters_seen == 1 else 'people'} present"
 
     return f"{event_type} event in {scene_label}, {people_str}"
+
+
+def _make_summary(scene_label: str, action_label: str, max_characters_seen: Optional[int]) -> str:
+    """
+    Backward-compatible alias for build_template_summary.
+
+    The old 3-argument form (scene_label, action_label, max_characters_seen) is
+    preserved for event_split.py and existing tests. action_label is used as the
+    event_type placeholder — adequate for template summaries where the final
+    event_type is assigned later by EventClassifier.
+
+    DO NOT use this in new code — call build_template_summary() directly with
+    the proper event_type from EventClassifier.
+    """
+    return build_template_summary(
+        event_type=action_label,
+        scene_label=scene_label,
+        max_characters_seen=max_characters_seen,
+    )
