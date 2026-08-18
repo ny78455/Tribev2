@@ -1,4 +1,4 @@
-﻿"""
+"""
 aese/summary.py
 Post-finalization event summary generator.
 
@@ -165,9 +165,13 @@ def generate_summary(event: "Event", keyframe_image: Optional[np.ndarray]) -> st
     Architecture:
       1. Build the guaranteed template fallback first (always available).
       2. If no real image or VLM unavailable -> return template immediately.
-      3. Call VLM with strict system prompt (max_tokens=60).
-      4. Validate output through _validate_or_fallback.
-      5. Return validated output or template fallback.
+      3. Build system prompt, extending it with dialogue context if available.
+         (event.dialogue_text is populated by event_constructor.py from subtitles
+         when --subtitles is supplied to the CLI. Without subtitles, this is None
+         and the prompt remains visual-only -- we do NOT fabricate dialogue.)
+      4. Call VLM with strict system prompt (max_tokens=80 with dialogue, 60 without).
+      5. Validate output through _validate_or_fallback.
+      6. Return validated output or template fallback.
 
     Args:
         event:          Finalized Event object (post-merge/classify).
@@ -198,7 +202,26 @@ def generate_summary(event: "Event", keyframe_image: Optional[np.ndarray]) -> st
         return template_fallback
 
     try:
-        raw = _call_vlm(SUMMARY_SYSTEM_PROMPT, keyframe_image, max_tokens=60)
+        # --- Build context-aware prompt (Fix 6) ---
+        system_prompt = SUMMARY_SYSTEM_PROMPT
+        max_tokens = 60
+        dialogue_text = getattr(event, "dialogue_text", None)
+        if dialogue_text:
+            # Inject verbatim subtitle text as grounding context.
+            # IMPORTANT: This only runs when the user supplied --subtitles.
+            # Without subtitles, dialogue_text is None and we do NOT fabricate dialogue.
+            system_prompt = (
+                system_prompt
+                + f'\nDialogue spoken during this event: "{dialogue_text}"'
+                + "\nDo not fabricate dialogue not provided above."
+            )
+            max_tokens = 80  # slightly more room to incorporate dialogue context
+            logger.debug(
+                "AESE summary: injecting %d chars of dialogue context for event %d",
+                len(dialogue_text), event.event_id,
+            )
+
+        raw = _call_vlm(system_prompt, keyframe_image, max_tokens=max_tokens)
         result = _validate_or_fallback(raw, template_fallback)
         if result != template_fallback:
             logger.debug(
