@@ -64,6 +64,7 @@ class TemporalFeature:
     spectral_flux: float = 0.0          # estimated from audio_energy delta
     image_available: bool = True         # False when no real pixel data existed for this second (manifest-replay mode)
     representative_image: Optional[np.ndarray] = None  # raw RGB frame for VLM summary (not serialized to JSON)
+    face_embeddings: List[np.ndarray] = field(default_factory=list)  # per-face CLIP-crop embeddings (Fix 4)
 
 
 
@@ -117,6 +118,13 @@ class Event:
     max_characters_seen: Optional[int] = None            # max(character_count_range); single headline number
     character_data_available: bool = True               # False if no seconds in this event had real images
     location_label: Optional[str] = None
+    # Fix 4: anonymous-but-consistent character labels ("Person A", "Person B", ...)
+    # Default is empty list. Set by pipeline.py after clustering.
+    # Real names appear here ONLY when the user supplies --character-references (Fix 5).
+    # AESE never automatically identifies unlabeled or public figures.
+    character_labels: List[str] = field(default_factory=list)
+    # Fix 6: aggregated dialogue text from TemporalFeatures (for VLM prompt grounding)
+    dialogue_text: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
