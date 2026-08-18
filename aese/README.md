@@ -187,3 +187,53 @@ enabling full-quality embeddings and scene label inference.
 
 4. **Summary is template-based** — not suitable for end-user display as-is.
    A downstream LLM summarization pass would be needed.
+
+---
+
+## Accuracy Limits and Known Constraints
+
+### Scene Classification
+
+AESE uses zero-shot CLIP classification against a fixed 15-label vocabulary
+(`kitchen`, `living room`, `bedroom`, `office`, `hallway`, `street`, `village`,
+`forest`, `beach`, `outdoor field`, `vehicle interior`, `rooftop`, `restaurant`,
+`stage/studio`, `unknown`).
+
+**This is a coarse heuristic, not a trained scene-recognition model.** Expect it to be
+correct "often, not always" — particularly for:
+- Tight close-ups (minimal background context)
+- Low-light or stylized cinematography
+- Transitional or ambiguous shots (e.g. a window seat that is both "indoor" and "outdoor")
+- Labels outside the fixed vocabulary
+
+When CLIP is unavailable (no GPU or model not downloaded), AESE falls back to a
+color-temperature heuristic that is less accurate still. The CLI prints which mode
+is active at startup (`SCENE CLASSIFICATION MODE`).
+
+**Do not rely on scene labels for precise location identification or downstream reasoning
+that requires factual accuracy.**
+
+### Character Identity
+
+AESE uses face detection to count people per second and cluster faces into consistent
+anonymous IDs (e.g. "Person A", "Person B") across a single video. This is **not**
+real-world identity recognition.
+
+- **Default behavior:** anonymous labels only. AESE will never automatically identify
+  or name a real person, including public figures.
+- **Opt-in named matching:** if you supply labeled reference photos via
+  `--character-references refs/john.jpg=John`, AESE will match detected faces against
+  those specific references and use the provided name when the match score is within
+  threshold. This only works for faces you have explicitly enrolled.
+- **Accuracy ceiling:** face matching uses CLIP image embeddings of face crops, which
+  is approximate. Profile shots, disguises, or low-resolution frames may fail to match.
+
+### Narrative Summaries
+
+- Without `--video`: summaries are template strings (`"Dialogue event in office, 2 people present"`).
+- With `--video` and FastVLM available: summaries describe what is *visible* in the keyframe.
+- With `--video` + `--subtitles`: summaries also reference *what is said* during the event.
+- Without `--subtitles`: summaries describe appearance only, not dialogue content.
+
+**Summaries are validated against a filler-pattern list before use.** Conversational filler
+("Let me know if you need help", bare `---` dividers) is replaced with the template fallback.
