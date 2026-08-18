@@ -262,3 +262,81 @@ shifts, topic changes, music transitions) that have no single deterministic cue.
 **Rationale:** The weighted sum is architecturally correct for ambiguous signals but wrong
 for unambiguous ones. A genuine hard cut should not need to out-vote a quiet clip via score
 dilution.
+
+---
+
+## 16. CHARACTER COUNTING — GENERATIVE VLM REMOVED FROM HOT PATH
+
+**Date:** 2026-08-18
+
+**Decision:** `adapters/character_stub.py::count_characters()` is now OpenCV-only.
+The FastVLM `count_people()` call (V2 primary path) was removed.
+
+**Root cause of regression:** `count_people()` issued a free-text prompt ("How many people
+are in this image?") and regex-parsed the response for an integer. When the model returned
+conversational filler ("Let me know if you need anything else."), the regex found no integer
+and the function silently returned 0. This caused `max_characters_seen=0` for every event
+across an entire run.
+
+**Architectural principle violated:** Character counting is a classification/detection task
+(input: image → output: integer), not a generation task. Generative free-text output must
+never be the sole source of a numeric field. The VLM was asked to *describe* the image
+and then its description was parsed for numbers — this conflates generation with classification
+and makes the result fragile to any phrasing variation.
+
+**Retained:** `fastvlm.count_people()` still exists as a standalone helper. It is not deleted
+and may be reintroduced later behind its own structured-output contract (e.g. constrained
+decoding or a classifier head), not as a free-text parse.
+
+**Detector chain after fix:**
+  1. OpenCV FaceDetectorYN / YuNet ONNX (OpenCV 5+)
+  2. OpenCV DNN SSD ResNet10 (OpenCV 4)
+  3. OpenCV Haar cascade frontal + profile (OpenCV 4)
+  4. 0 — last resort
+
+**Regression test:** `tests/test_character_detection_regression.py::test_count_characters_never_calls_generative_vlm`
+patches `fastvlm.count_people` to raise if called and asserts `count_characters()` runs cleanly.
+
+---
+
+## 17. GENERATIVE SUMMARY — MOVED TO POST-FINALIZATION, OFF THE HOT PATH
+
+**Date:** 2026-08-18
+
+**Decision:** `event_constructor._close_event()` no longer calls any generative model.
+The VLM summary call was extracted to `aese/summary.py::generate_summary()`, which is
+called **once per finalized event** in `pipeline.py::_finalize_event()`, after
+`OnlineMerger`, `EventClassifier`, and contiguous-ID assignment have all completed.
+
+**Root cause of runtime regression:** `_make_vlm_or_template_summary()` was called inside
+`_close_event()`, which fires on every candidate event boundary (~81 times for an 81s clip).
+Each VLM call takes ~5-8 seconds, producing a ~12-minute runtime for an 81-second clip
+(~90× overhead). The `<100ms/decision` requirement in §8 was violated by construction.
+
+**New architecture:**
+```
+[Per-second hot path, <100ms]
+  aggregator → boundary detection → event construction → merge → classify
+                                    ↑ NO VLM CALLS HERE ↑
+
+[Post-finalization, once per event, off the hot path]
+  _finalize_event() → generate_summary() → yield event
+```
+
+**VLM call count improvement:** From ~81 calls (per second) to ~8 calls (per finalized event)
+for the 81s fight clip — a ~10× reduction, and the primary fix for the runtime regression.
+
+**Output validation in summary.py:** `_validate_or_fallback()` gates every VLM response:
+  - Length < 5 chars → template fallback
+  - Filler pattern match (6 compiled regexes) → template fallback
+  - More than 1 newline → template fallback
+  - Any exception → template fallback
+
+`build_template_summary()` (from `event_constructor.py`) is the permanent safety net.
+It is never deprecated, never optional, always called first to produce the fallback.
+
+**Regression tests:**
+  - `test_regression_fight_clip.py::test_no_conversational_filler_in_any_summary`
+  - `test_regression_fight_clip.py::test_generative_summary_call_count_matches_event_count`
+  - `test_performance_gates.py::test_per_second_decision_latency` (p95 < 100ms)
+  - `test_performance_gates.py::test_full_pipeline_runtime_budget` (< 90s for 81s clip)
