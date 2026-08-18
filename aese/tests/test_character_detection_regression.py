@@ -96,8 +96,14 @@ def test_get_effective_detector_chain_returns_nonempty_string():
     chain = get_effective_detector_chain()
     assert isinstance(chain, str), f"Expected str, got {type(chain)}"
     assert len(chain) > 0, "Detector chain string must not be empty"
+    # "fastvlm" is intentionally NOT a valid value -- character counting must
+    # never route through a generative model (see DECISIONS.md §16, Fix 1 2026-08-18).
+    assert chain != "fastvlm", (
+        "get_effective_detector_chain() returned 'fastvlm' -- character counting "
+        "has been coupled to the generative VLM again. This is the root cause of "
+        "max_characters_seen=0 across all events. Fix: restore OpenCV-only path."
+    )
     assert chain in (
-        "fastvlm",
         "yunet",
         "dnn",
         "opencv_haar_frontal+profile",
@@ -114,3 +120,46 @@ def test_get_effective_detector_chain_returns_nonempty_string():
 def test_none_image_returns_zero():
     """count_characters(None) must always return 0 without crashing."""
     assert count_characters(None) == 0
+
+
+# ---------------------------------------------------------------------------
+# Deterministic-path guarantee (Fix 1 regression guard)
+# ---------------------------------------------------------------------------
+
+def test_count_characters_never_calls_generative_vlm():
+    """
+    count_characters() must NOT call fastvlm.count_people() or any other
+    generative model. This is the root-cause guard for the max_characters_seen=0
+    regression: count_people() returned filler text, the regex found no integer,
+    and 0 was silently returned for every frame.
+
+    Method: monkey-patch fastvlm.count_people to raise if called, then verify
+    count_characters() on a known image does not raise and still returns a
+    sensible result.
+    """
+    if not skimage_available:
+        pytest.skip("scikit-image not installed")
+
+    import unittest.mock as mock
+    import aese.adapters.fastvlm as fastvlm_mod
+
+    img = skdata.astronaut()
+
+    with mock.patch.object(
+        fastvlm_mod,
+        "count_people",
+        side_effect=AssertionError(
+            "count_characters() called fastvlm.count_people() -- "
+            "generative VLM must not be in the character-counting hot path."
+        ),
+    ):
+        # Must not raise, even if count_people would raise.
+        # (count_people is only called if character_stub imports it; after Fix 1 it should not.)
+        try:
+            count = count_characters(img)
+            # Result is a non-negative int -- the OpenCV path ran.
+            assert isinstance(count, int) and count >= 0, (
+                f"count_characters returned {count!r} -- expected a non-negative int"
+            )
+        except AssertionError as exc:
+            pytest.fail(str(exc))

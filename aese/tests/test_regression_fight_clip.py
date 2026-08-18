@@ -329,3 +329,117 @@ def test_action_event_outranks_dialogue_in_importance(fight_clip_events):
         f"Action event importance {max_action_importance:.4f} does not strictly outrank "
         f"Dialogue importance {max_dialogue_importance:.4f}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 9 -- No conversational filler in any summary (Fix 3 regression guard)
+# ---------------------------------------------------------------------------
+
+def test_no_conversational_filler_in_any_summary(fight_clip_events):
+    """
+    No event summary may contain conversational filler or bare markdown dividers.
+
+    This guards against the regression where the generative VLM was producing
+    outputs like "Let me know if you need anything else.\nAnswer" or "---\n---".
+    The _validate_or_fallback gate in summary.py must catch all such outputs
+    and substitute the template fallback before any event is emitted.
+
+    In this test suite, VLM is unavailable (no model installed), so all summaries
+    should be template-based and trivially clean. The test is still valuable as
+    a canary: if filler somehow appears, a VLM has re-entered the hot path
+    without going through the validation gate.
+    """
+    import re
+
+    _FILLER_PATTERNS = [
+        re.compile(r"(?i)let\s+me\s+know\s+if"),
+        re.compile(r"(?i)i('| a)ll\s+be\s+happy\s+to"),
+        re.compile(r"(?im)^(answer|here\s+is|here'?s)\b"),
+        re.compile(r"(?m)^-{2,}\s*$"),
+        re.compile(r"(?i)as\s+an\s+ai"),
+        re.compile(r"(?i)i\s+(can'?t|cannot|am\s+unable)"),
+    ]
+
+    for e in fight_clip_events:
+        assert e.summary, f"Event {e.event_id} has an empty summary -- must always have at least a template"
+        for pattern in _FILLER_PATTERNS:
+            assert not pattern.search(e.summary), (
+                f"Event {e.event_id}: filler pattern {pattern.pattern!r} found in "
+                f"summary {e.summary!r}. The _validate_or_fallback gate did not fire."
+            )
+
+
+# ---------------------------------------------------------------------------
+# Test 10 -- Character counts not universally zero (Fix 1 regression guard)
+# ---------------------------------------------------------------------------
+
+def test_character_counts_not_universally_zero_or_all_none(fight_clip_events):
+    """
+    The synthetic fight clip has image=None for all packets (manifest-replay mode),
+    so character_count_range and max_characters_seen should be None (not 0) for
+    all events -- None means 'no image data available', not 'zero people seen'.
+
+    This test verifies:
+    1. max_characters_seen is None (not 0) when no real images were provided.
+       A value of 0 in this mode would mean the detector was called on a black
+       frame and returned 0 -- which is semantically wrong (should be None).
+    2. The character_data_available flag correctly reflects the image availability.
+
+    NOTE: If this test is run with real images (live mode), assert at least one
+    event has max_characters_seen > 0. The synthetic stream uses image=None, so
+    we assert None (not 0) as the correct sentinel for missing image data.
+    """
+    has_any_real_image = any(
+        e.character_data_available and e.max_characters_seen is not None
+        for e in fight_clip_events
+    )
+
+    if not has_any_real_image:
+        # Manifest-replay mode: all images were None. Verify None sentinel, NOT 0.
+        for e in fight_clip_events:
+            assert e.max_characters_seen is None, (
+                f"Event {e.event_id}: max_characters_seen={e.max_characters_seen} but "
+                f"no real images were in the stream. Expected None (not 0). "
+                f"A value of 0 suggests the detector ran on a black frame and returned "
+                f"0 instead of being skipped. Check aggregator.py's None-guard."
+            )
+    else:
+        # Live mode with real images: at least one event must have seen people.
+        assert any(e.max_characters_seen and e.max_characters_seen > 0 for e in fight_clip_events), (
+            "All events report max_characters_seen=0 with real images present. "
+            "This is the free-text VLM parsing regression: count_people() returned "
+            "filler text with no parseable integer, silently defaulting to 0. "
+            "Fix: restore the deterministic OpenCV-only path in character_stub.py."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 11 -- generate_summary call count equals event count (Fix 2 + 3 guard)
+# ---------------------------------------------------------------------------
+
+def test_generative_summary_call_count_matches_event_count():
+    """
+    generate_summary() must be called exactly once per finalized event --
+    never once per TemporalFeature, never once per boundary-decision step.
+
+    This guards against the hot-path regression: calling VLM summary generation
+    ~81 times for an 81s clip instead of ~8 times (once per event).
+
+    Method: reset the _summary_call_counter, run the full pipeline on a fresh
+    stream, then assert counter == len(events).
+    """
+    from aese.summary import _summary_call_counter
+    from aese.pipeline import run as aese_run
+
+    _summary_call_counter.reset()
+
+    config = AESEConfig()
+    events = list(aese_run(_fight_clip_stream(), config))
+
+    assert _summary_call_counter.count == len(events), (
+        f"generate_summary() was called {_summary_call_counter.count} times "
+        f"but {len(events)} events were emitted. "
+        f"Expected 1 call per finalized event. "
+        f"If count >> len(events), a VLM summary call has re-entered the hot path "
+        f"and is running once per TemporalFeature or per boundary-decision step."
+    )
