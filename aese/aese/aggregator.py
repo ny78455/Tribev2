@@ -25,7 +25,8 @@ import numpy as np
 
 from .adapters.action_stub import label_action
 from .adapters.camera_cues import detect_camera_cue
-from .adapters.character_stub import count_characters
+from .adapters.character_cluster import extract_face_embeddings
+from .adapters.character_stub import count_characters, detect_faces_with_boxes
 from .adapters.embedding import compute_embedding
 from .adapters.music_mood import estimate_spectral_flux, label_mood
 from .adapters.scene_label import label_scene
@@ -225,6 +226,14 @@ class FeatureAggregator:
         char_counts = [count_characters(p.image) for p in real_image_packets]
         character_count: Optional[int] = max(char_counts) if char_counts else None
 
+        # --- Face embeddings: for Fix 4 anonymous clustering (real images only) ---
+        # Use the representative image if available; extract face boxes then embed crops.
+        # Returns [] gracefully when CLIP is unavailable or no faces found.
+        face_embeddings = []
+        if image_for_embedding is not None:
+            boxes = detect_faces_with_boxes(image_for_embedding)
+            face_embeddings = extract_face_embeddings(image_for_embedding, boxes)
+
         tf = TemporalFeature(
             timestamp_ms=ts,
             scene_label=scene_label,
@@ -241,6 +250,7 @@ class FeatureAggregator:
             spectral_flux=flux,
             image_available=has_real_image,
             representative_image=image_for_embedding,  # raw RGB for VLM summary; None in manifest-replay mode
+            face_embeddings=face_embeddings,
         )
 
         self._prev_feature = tf
