@@ -201,6 +201,19 @@ class EventConstructor:
         # Location label from dominant scene label
         location_label = scene_label if scene_label != "unknown" else None
 
+        # Aggregate dialogue text for Fix 6 (VLM summary grounding)
+        # Collect unique non-empty dialogue texts from all features in this event
+        seen_dialogue: set = set()
+        dialogue_parts = []
+        for tf in features:
+            if tf.dialogue_text:
+                for part in tf.dialogue_text.split(" | "):
+                    part = part.strip()
+                    if part and part not in seen_dialogue:
+                        seen_dialogue.add(part)
+                        dialogue_parts.append(part)
+        event_dialogue_text = " ".join(dialogue_parts) if dialogue_parts else None
+
         event = Event(
             event_id=self._candidate_counter,
             start_time_ms=start_ms,
@@ -217,6 +230,7 @@ class EventConstructor:
             max_characters_seen=max_characters_seen,
             character_data_available=character_data_available,
             location_label=location_label,
+            dialogue_text=event_dialogue_text,
         )
 
         self._candidate_counter += 1
