@@ -2,18 +2,16 @@
 aese/adapters/scene_label.py
 Scene labeling adapter.
 
-V2: Primary path uses riddhimanrana/fastvlm-0.5b-captions (FastVLM) via the
-fastvlm.py singleton. FastVLM generates a scene description and the result is
-mapped to the fixed 12-label vocabulary so the TemporalFeature.scene_label
-contract is unchanged.
+V3: Primary path routes through vlm_router so the active backend
+(fastvlm / gemma4 / yunet) is respected without hard-coding fastvlm here.
 
 Fallback chain (applied in order when image is unavailable or model fails):
-  1. FastVLM (riddhimanrana/fastvlm-0.5b-captions) — primary, VLM-quality
-  2. CLIP zero-shot against the same label set — if open_clip is available
-  3. Color-temperature heuristic — last resort
+  1. Active VLM backend via vlm_router (fastvlm / gemma4)
+  2. CLIP zero-shot against the same label set -- if open_clip is available
+  3. Color-temperature heuristic -- last resort
 
 Falls back to "unknown" if all methods fail or if the image is None/black.
-See DECISIONS.md §3.
+See DECISIONS.md S3.
 """
 from __future__ import annotations
 
@@ -79,6 +77,74 @@ def _load_clip_text_features() -> bool:
         _clip_labels_loaded = True
         logger.debug("AESE scene_label: cached CLIP text features for %d labels", len(_SCENE_LABELS))
         return True
+    except Exception as exc:
+        logger.debug("AESE scene_label: CLIP text feature cache failed: %s", exc)
+        _clip_labels_loaded = True
+        return False
+
+
+def label_scene(image: np.ndarray) -> str:
+    """
+    Classify the scene label of a single frame.
+
+    Primary path: Active VLM backend via vlm_router (fastvlm / gemma4).
+    Fallback 1:   CLIP zero-shot (if open_clip is available).
+    Fallback 2:   Color-temperature heuristic (last resort).
+
+    Args:
+        image: HxWx3 RGB numpy array. Must not be None (caller filters None images).
+               Black frames (image.max() < 5) short-circuit to "unknown".
+
+    Returns:
+        str: One of the labels in SCENE_LABELS. ALWAYS returns a str, never None.
+             Returns "unknown" on any failure.
+    """
+    if image is None or image.max() < 5:
+        return "unknown"
+
+    # --- Path 1: Active VLM backend (fastvlm / gemma4 / yunet via router) ---
+    try:
+        from .vlm_router import describe_scene as _vlm_describe_scene, vlm_available
+        if vlm_available():
+            result = _vlm_describe_scene(image)
+            if result and result != "unknown":
+                return result
+            # VLM returned "unknown" -- trust it and skip CLIP
+            return "unknown"
+    except Exception as exc:
+        logger.debug("AESE scene_label: VLM path failed: %s -- trying CLIP", exc)
+
+    # --- Path 2: CLIP zero-shot ---
+    try:
+        from .embedding import _clip_model, _clip_preprocess, _clip_available
+        import torch
+
+        if _clip_available and _clip_model is not None and _load_clip_text_features():
+            device = next(_clip_model.parameters()).device
+            import PIL.Image as PILImage
+            pil_img = PILImage.fromarray(image)
+            img_tensor = _clip_preprocess(pil_img).unsqueeze(0).to(device)
+
+            with torch.no_grad():
+                img_feat = _clip_model.encode_image(img_tensor)
+                img_feat = img_feat / img_feat.norm(dim=-1, keepdim=True)
+                img_vec = img_feat.squeeze(0).cpu().numpy().astype(np.float32)
+
+            sims = _clip_text_features @ img_vec
+            best_idx = int(np.argmax(sims))
+            return _SCENE_LABELS[best_idx]
+
+    except Exception as exc:
+        logger.debug("AESE scene_label CLIP inference failed: %s -- using heuristic", exc)
+
+    # --- Path 3: heuristic ---
+    return _heuristic_scene_label(image)
+
+
+def _heuristic_scene_label(image: np.ndarray) -> str:
+    """
+    Bare-minimum heuristic for scene label when VLM and CLIP are unavailable.
+    Uses color temperature (blue channel ratio for sky/outdoor, warm tones for indoor).
     Not reliable -- only a last-resort fallback. Always returns a label in SCENE_LABELS.
     """
     try:
