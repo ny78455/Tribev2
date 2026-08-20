@@ -79,51 +79,6 @@ def _load_clip_text_features() -> bool:
         _clip_labels_loaded = True
         logger.debug("AESE scene_label: cached CLIP text features for %d labels", len(_SCENE_LABELS))
         return True
-    except Exception as exc:
-        logger.debug("AESE scene_label: CLIP text feature cache failed: %s", exc)
-        _clip_labels_loaded = True
-        return False
-
-
-def label_scene(image: np.ndarray) -> str:
-    """
-    Classify the scene label of a single frame.
-
-    Primary path: FastVLM (riddhimanrana/fastvlm-0.5b-captions).
-    Fallback 1:   CLIP zero-shot (if open_clip is available).
-    Fallback 2:   Color-temperature heuristic (last resort).
-
-    Args:
-        image: HxWx3 RGB numpy array. Must not be None (caller filters None images).
-               Black frames (image.max() < 5) short-circuit to "unknown".
-
-    Returns:
-        if _clip_available and _clip_model is not None and _load_clip_text_features():
-            device = next(_clip_model.parameters()).device
-            import PIL.Image as PILImage
-            pil_img = PILImage.fromarray(image)
-            img_tensor = _clip_preprocess(pil_img).unsqueeze(0).to(device)
-
-            with torch.no_grad():
-                img_feat = _clip_model.encode_image(img_tensor)
-                img_feat = img_feat / img_feat.norm(dim=-1, keepdim=True)
-                img_vec = img_feat.squeeze(0).cpu().numpy().astype(np.float32)
-
-            sims = _clip_text_features @ img_vec
-            best_idx = int(np.argmax(sims))
-            return _SCENE_LABELS[best_idx]
-
-    except Exception as exc:
-        logger.debug("AESE scene_label CLIP inference failed: %s — using heuristic", exc)
-
-    # --- Path 3: heuristic ---
-    return _heuristic_scene_label(image)
-
-
-def _heuristic_scene_label(image: np.ndarray) -> str:
-    """
-    Bare-minimum heuristic for scene label when VLM and CLIP are unavailable.
-    Uses color temperature (blue channel ratio for sky/outdoor, warm tones for indoor).
     Not reliable -- only a last-resort fallback. Always returns a label in SCENE_LABELS.
     """
     try:
