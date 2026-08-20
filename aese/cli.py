@@ -187,6 +187,17 @@ def main() -> None:
              "real names; all others remain anonymous (Person A, Person B, ...).",
     )
     parser.add_argument(
+        "--vlm",
+        choices=["fastvlm", "gemma4", "yunet"],
+        default="fastvlm",
+        metavar="BACKEND",
+        help="VLM backend to use for scene labeling and event captioning. "
+             "Choices: fastvlm (apple/FastVLM-0.5B, fast, low VRAM), "
+             "gemma4 (google/gemma-4-E2B-it, high quality, needs >=24 GB VRAM), "
+             "yunet (no generative VLM; character detection via OpenCV YuNet only). "
+             "Default: fastvlm.",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true",
         help="Enable DEBUG logging.",
     )
@@ -194,6 +205,10 @@ def main() -> None:
     args = parser.parse_args()
     _setup_logging(args.verbose)
     logger = logging.getLogger("aese.cli")
+
+    # --- Apply VLM backend selection ---
+    from aese.adapters.vlm_router import set_backend as _set_vlm_backend
+    _set_vlm_backend(args.vlm)
 
     # --- Validate inputs ---
     if not os.path.isfile(args.input):
@@ -234,20 +249,21 @@ def main() -> None:
     # --- Detector-mode banner ---
     # Must print unconditionally to stdout -- not just logger.warning -- so it
     # cannot be filtered by log level settings or redirected output.
-    from aese.adapters.fastvlm import _ensure_loaded
+    from aese.adapters.vlm_router import get_active_detector_mode as _vlm_detector_mode
+    from aese.adapters.vlm_router import vlm_available as _vlm_available_fn
     from aese.adapters.character_stub import get_effective_detector_chain
     from aese.adapters.scene_label import _clip_available as _scene_clip_available
-    _ensure_loaded()  # trigger load attempt before reading the mode
+    _vlm_available_fn()  # trigger lazy load attempt for the selected backend
     active_chain = get_effective_detector_chain()
+    vlm_mode = _vlm_detector_mode()
     print("=" * 70)
+    print(f"  VLM BACKEND: {args.vlm.upper()}  (active mode: {vlm_mode})")
     print(f"  CHARACTER DETECTION MODE: {active_chain}")
-    if active_chain != "fastvlm":
+    if active_chain not in ("fastvlm", "yunet", "dnn", "opencv_haar_frontal+profile", "opencv_haar_frontal"):
         print(
-            "  WARNING: FastVLM is NOT active. Character counts will use a\n"
-            f"  weaker fallback detector ({active_chain}) with lower recall on\n"
-            "  non-frontal faces, small faces, or difficult lighting.\n"
-            "  Install torch, transformers>=4.52, and accelerate to enable\n"
-            "  FastVLM-powered detection."
+            "  WARNING: No face detector is active. Character counts will be 0.\n"
+            "  Install torch + transformers>=4.52 for fastvlm, or ensure\n"
+            "  models/yunet/face_detection_yunet_2023mar.onnx exists for yunet."
         )
     scene_mode = "CLIP" if _scene_clip_available() else 'unavailable (labels will be "unknown" or heuristic)'
     print(f"  SCENE CLASSIFICATION MODE: {scene_mode}")
