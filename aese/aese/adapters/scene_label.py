@@ -98,30 +98,6 @@ def label_scene(image: np.ndarray) -> str:
                Black frames (image.max() < 5) short-circuit to "unknown".
 
     Returns:
-        str: One of the labels in SCENE_LABELS. ALWAYS returns a str, never None.
-             Returns "unknown" on any failure.
-    """
-    if image is None or image.max() < 5:
-        return "unknown"
-
-    # --- Path 1: FastVLM ---
-    try:
-        from .fastvlm import describe_scene, _fastvlm_available
-        # Only attempt if already loaded successfully, or on first call
-        result = describe_scene(image)
-        if result and result != "unknown":
-            return result
-        if _fastvlm_available:
-            # VLM returned "unknown" — trust it and skip CLIP
-            return "unknown"
-    except Exception as exc:
-        logger.debug("AESE scene_label: FastVLM path failed: %s — trying CLIP", exc)
-
-    # --- Path 2: CLIP zero-shot ---
-    try:
-        from .embedding import _clip_model, _clip_preprocess, _clip_available
-        import torch
-
         if _clip_available and _clip_model is not None and _load_clip_text_features():
             device = next(_clip_model.parameters()).device
             import PIL.Image as PILImage
