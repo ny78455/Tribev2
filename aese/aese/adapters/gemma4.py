@@ -1,6 +1,6 @@
-﻿"""
+"""
 aese/adapters/gemma4.py
-Singleton adapter for google/gemma-4-E2B-it (Gemma 4 42B).
+Singleton adapter for google/gemma-4-E2B-it (Gemma 4 2B instruction-tuned).
 
 Provides the same public surface as fastvlm.py so either adapter can be
 used as a drop-in via vlm_router.py:
@@ -63,7 +63,7 @@ def _ensure_loaded() -> bool:
             return _gemma4_available
         try:
             import torch
-            from transformers import AutoProcessor, AutoModelForImageTextToText
+            from transformers import AutoProcessor, AutoModelForMultimodalLM
 
             dtype = "auto"
             logger.info(
@@ -71,7 +71,7 @@ def _ensure_loaded() -> bool:
                 _MODEL_ID, dtype,
             )
             _processor = AutoProcessor.from_pretrained(_MODEL_ID)
-            _model = AutoModelForImageTextToText.from_pretrained(
+            _model = AutoModelForMultimodalLM.from_pretrained(
                 _MODEL_ID,
                 dtype=dtype,
                 device_map="auto",
