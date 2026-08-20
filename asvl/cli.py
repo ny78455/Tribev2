@@ -97,9 +97,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--whisper-language",
-        default="en",
+        default="hi",
         metavar="LANG",
-        help="Language code for whisper.cpp transcription (default: en). Use 'auto' for auto-detect.",
+        help="Language code for whisper.cpp transcription (default: hi). Use 'auto' for auto-detect.",
     )
     parser.add_argument(
         "--verbose", "-v",

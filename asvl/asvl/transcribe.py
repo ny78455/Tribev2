@@ -254,7 +254,7 @@ def extract_audio(video_path: str, wav_path: str) -> bool:
 def _transcribe_faster_whisper(
     video_path: str,
     model_name: str = "base",
-    language: str = "en",
+    language: str = "hi",
 ) -> Optional[str]:
     """
     Transcribe *video_path* using the faster-whisper Python package.
