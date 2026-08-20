@@ -298,6 +298,7 @@ def _transcribe_faster_whisper(
         segments, info = model.transcribe(
             video_path,
             language=fw_language,
+            task="transcribe",
             beam_size=5,
             vad_filter=True,
         )
