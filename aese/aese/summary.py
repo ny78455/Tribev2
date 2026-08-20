@@ -87,25 +87,25 @@ _summary_call_counter = _CallCounter()
 # ---------------------------------------------------------------------------
 
 def _vlm_available() -> bool:
-    """Return True if FastVLM is loaded and usable."""
+    """Return True if the active VLM backend is loaded and usable."""
     try:
-        from .adapters.fastvlm import _fastvlm_available
-        return bool(_fastvlm_available)
+        from .adapters.vlm_router import vlm_available
+        return vlm_available()
     except Exception:
         return False
 
 
 def _call_vlm(system_prompt: str, image: np.ndarray, max_tokens: int = 60) -> str:
     """
-    Thin wrapper around fastvlm._ask().
+    Thin wrapper around vlm_router.ask().
     Returns the raw response string, or "" on any failure.
     The system prompt is prepended to the user turn (standard approach for
     instruction-following with this model family).
     """
     try:
-        from .adapters.fastvlm import _ask
+        from .adapters.vlm_router import ask
         combined_prompt = f"{system_prompt}\n\nDescribe this frame."
-        return _ask(image, combined_prompt, max_new_tokens=max_tokens)
+        return ask(image, combined_prompt, max_new_tokens=max_tokens)
     except Exception as exc:
         logger.debug("AESE summary: VLM call failed: %s", exc)
         return ""
