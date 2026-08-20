@@ -60,7 +60,7 @@ def run(
     scheduler_mode: str = "sync",
     auto_transcribe: bool = True,
     whisper_model: Optional[str] = None,
-    whisper_language: str = "en",
+    whisper_language: str = "hi",
 ) -> Iterator[FramePacket]:
     """
     Main ASVL pipeline: stream-decode a video and yield important FramePackets.
@@ -75,7 +75,7 @@ def run(
         auto_transcribe:  Attempt whisper.cpp auto-transcription when no
                           subtitle_path is provided. Set False to disable.
         whisper_model:    Override path to whisper ggml model file.
-        whisper_language: Language code for whisper (default: "en").
+        whisper_language: Language code for whisper (default: "hi").
 
     Yields:
         FramePacket objects for frames selected by the adaptive controller.
