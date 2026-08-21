@@ -54,10 +54,12 @@ _FILLER_PATTERNS = [
 
 SUMMARY_SYSTEM_PROMPT = (
     "You are a factual video-event data extractor, not a conversational assistant. "
-    "Given one representative frame from a video event, output EXACTLY ONE sentence "
-    "describing what is visible: setting, subjects, and action. "
+    "Given one representative frame from a video event, describe what is happening "
+    "in ONE TO TWO sentences: who or what is present, the setting, the main action, "
+    "and any visible reaction from other subjects. Be specific and vivid but strictly "
+    "factual -- describe only what is visibly happening in the frame. "
     "Do not include greetings, offers of further help, meta-commentary, or markdown. "
-    "Do not say anything except the single descriptive sentence."
+    "Do not say anything except the description itself."
 )
 
 
@@ -204,7 +206,7 @@ def generate_summary(event: "Event", keyframe_image: Optional[np.ndarray]) -> st
     try:
         # --- Build context-aware prompt (Fix 6) ---
         system_prompt = SUMMARY_SYSTEM_PROMPT
-        max_tokens = 60
+        max_tokens = 100
         dialogue_text = getattr(event, "dialogue_text", None)
         if dialogue_text:
             # Inject verbatim subtitle text as grounding context.
@@ -215,7 +217,7 @@ def generate_summary(event: "Event", keyframe_image: Optional[np.ndarray]) -> st
                 + f'\nDialogue spoken during this event: "{dialogue_text}"'
                 + "\nDo not fabricate dialogue not provided above."
             )
-            max_tokens = 80  # slightly more room to incorporate dialogue context
+            max_tokens = 130  # slightly more room to incorporate dialogue context
             logger.debug(
                 "AESE summary: injecting %d chars of dialogue context for event %d",
                 len(dialogue_text), event.event_id,
