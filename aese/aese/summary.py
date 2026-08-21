@@ -69,6 +69,16 @@ SUMMARY_SYSTEM_PROMPT = (
     "Output: A close-up shot shows a young man staring out a rain-streaked window in a dark room. A single tear rolls down his cheek, conveying a strong sense of sorrow."
 )
 
+# Short prompt for small models (e.g. FastVLM 0.5B).
+# Large example blocks cause small models to predict EOS immediately
+# (the model sees a completed example and thinks the sequence is done).
+# Keep this under ~120 chars so it tokenizes to ~30 tokens,
+# leaving maximum context budget for the image and generated response.
+SUMMARY_SYSTEM_PROMPT_SHORT = (
+    "Describe what is happening in this image in one or two sentences. "
+    "Be specific about people, actions, and setting. Output only the description."
+)
+
 
 # ---------------------------------------------------------------------------
 # Call counter -- testability hook
@@ -108,18 +118,25 @@ def _call_vlm(system_prompt: str, image: np.ndarray, max_tokens: int = 100) -> s
     """
     Run a VLM inference call via vlm_router.
 
-    Passes system_prompt and user prompt as distinct arguments so each
-    adapter can format them correctly (e.g. Gemma-4 puts them in separate
-    chat roles; FastVLM prepends the system text to the user turn).
+    Chooses between the full system prompt (Gemma-4) and the compact short
+    prompt (FastVLM and other small models) to avoid the EOS-immediately
+    problem that occurs when small models see completed example blocks.
 
     Returns the raw response string, or "" on any failure.
     """
     try:
-        from .adapters.vlm_router import ask
+        from .adapters.vlm_router import ask, get_backend
+        # Small models (FastVLM 0.5B) generate EOS immediately when given long
+        # prompts ending with completed Output: examples.  Use the short prompt.
+        backend = get_backend()
+        if backend == "fastvlm":
+            effective_prompt = SUMMARY_SYSTEM_PROMPT_SHORT
+        else:
+            effective_prompt = system_prompt  # full prompt with examples for gemma4
         return ask(
             image_rgb=image,
-            prompt="Describe this frame.",
-            system_prompt=system_prompt,
+            prompt="What is happening in this image?",
+            system_prompt=effective_prompt,
             max_new_tokens=max_tokens,
         )
     except Exception as exc:
