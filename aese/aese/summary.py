@@ -45,6 +45,12 @@ _FILLER_PATTERNS = [
     re.compile(r"(?m)^-{2,}\s*$"),       # bare markdown dividers on their own line
     re.compile(r"(?i)as\s+an\s+ai"),
     re.compile(r"(?i)i\s+(can'?t|cannot|am\s+unable)"),
+    # --- Artifact patterns from FastVLM / Gemma-4 meta-commentary ---
+    re.compile(r"(?i)please\s+note\s+that"),
+    re.compile(r"(?i)based\s+on\s+(the\s+)?visible\s+elements"),
+    re.compile(r"(?i)does\s+not\s+include\s+any\s+assumptions"),
+    re.compile(r"(?m)^\s*\d+\.\s"),      # leaked numbered-list formatting ("2. In this")
+    re.compile(r"<end\s+of[^>]*>", re.I), # leaked stop/end tags ("<end of detailed answer>")
 ]
 
 
@@ -236,7 +242,7 @@ def generate_summary(event: "Event", keyframe_image: Optional[np.ndarray]) -> st
         return template_fallback
 
     try:
-        # --- Build context-aware prompt (Fix 6) ---
+        # --- Build context-aware prompt ---
         system_prompt = SUMMARY_SYSTEM_PROMPT
         max_tokens = 100
         dialogue_text = getattr(event, "dialogue_text", None)
@@ -253,6 +259,19 @@ def generate_summary(event: "Event", keyframe_image: Optional[np.ndarray]) -> st
             logger.debug(
                 "AESE summary: injecting %d chars of dialogue context for event %d",
                 len(dialogue_text), event.event_id,
+            )
+
+        # Inject resolved character identities into the prompt so the model
+        # references people by label/name rather than generic "a person".
+        character_labels = getattr(event, "character_labels", [])
+        if character_labels:
+            identity_context = ", ".join(character_labels)
+            system_prompt = (
+                system_prompt
+                + f"\nThe people visible have been identified as: {identity_context}. "
+                + "Refer to them by these labels/names in your description "
+                + "(e.g. 'Person A enters the room and speaks to Dev'), "
+                + "not generic terms like 'a person' or 'someone'."
             )
 
         raw = _call_vlm(system_prompt, keyframe_image, max_tokens=max_tokens)
