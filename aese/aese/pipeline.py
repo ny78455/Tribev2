@@ -36,6 +36,11 @@ from typing import Iterator, List, Optional
 import numpy as np
 
 from .adapters.character_cluster import CharacterClusterer, get_character_labels_for_event
+from .adapters.character_naming import (
+    CharacterNameBinder,
+    apply_resolved_names,
+    extract_name_mentions,
+)
 from .aggregator import FeatureAggregator
 from .boundary.candidate_detector import CandidateDetector
 from .context_buffer import ContextBuffer
@@ -68,40 +73,46 @@ def _finalize_event(
     next_id: int,
     clusterer: Optional["CharacterClusterer"] = None,
     event_features_map: Optional[dict] = None,
+    binder: Optional["CharacterNameBinder"] = None,
 ) -> None:
     """
-    Assign contiguous ID, assign character labels, and generate the final summary.
+    Assign contiguous ID, assign character labels, feed name evidence to the
+    binder, and generate the final summary.
+
+    Character naming:
+      After get_character_labels_for_event() resolves the cluster labels for
+      this event, we scan the event's dialogue_text for high-confidence
+      vocative mentions. If exactly ONE cluster is visible, we call
+      binder.observe() to accumulate evidence. The actual relabeling happens
+      later in a batch pass (apply_resolved_names in cli.py), never here.
 
     Summary generation order:
-      1. generate_summary() -- calls VLM if available + real image, with validation.
-         Internally falls back to build_template_summary() on any failure.
-      2. If event.summary is still empty (e.g. generate_summary raised unexpectedly),
-         build_template_summary() is the guaranteed safety net.
-
-    Character labeling:
-      - If clusterer is provided, resolves face embeddings from the event's source
-        TemporalFeatures into anonymous labels ("Person A", "Person B", ...).
-      - Empty list if clustering is unavailable (manifest-replay mode, no --video).
-
-    This function runs AFTER merge/classify -- once per finalized event, never
-    in the per-second boundary-detection loop.
+      1. generate_summary() -- VLM if available + real image, with validation.
+      2. If empty, build_template_summary() is the guaranteed safety net.
     """
     event.event_id = next_id
 
-    # --- Character clustering (Fix 4) ---
+    # --- Character clustering ---
     if clusterer is not None and event_features_map is not None:
         feats = event_features_map.get(event.event_id, [])
         face_embeddings_per_second = [getattr(tf, "face_embeddings", []) for tf in feats]
         event.character_labels = get_character_labels_for_event(face_embeddings_per_second, clusterer)
 
+    # --- Name evidence accumulation (binder) ---
+    # Only observe when exactly one cluster is visible -- that is the only case
+    # where attribution is unambiguous (build spec §4, §8 guardrails).
+    if binder is not None and event.character_labels:
+        dialogue_text = getattr(event, "dialogue_text", None) or ""
+        if dialogue_text and len(event.character_labels) == 1:
+            for mention in extract_name_mentions(dialogue_text, event.start_time_ms):
+                binder.observe(mention, event.character_labels)
+
     # --- Summary generation ---
     keyframe_image = None
     if event.key_frame is not None and hasattr(event.key_frame, 'shape') and event.key_frame.ndim == 3:
-        # key_frame is a real pixel array (live mode) -- use it for VLM summary
         keyframe_image = event.key_frame
     event.summary = generate_summary(event, keyframe_image)
     if not event.summary:
-        # Guaranteed safety net -- should never be reached since generate_summary always returns str
         event.summary = build_template_summary(
             event_type=event.event_type,
             scene_label=event.location_label or "unknown",
@@ -112,6 +123,7 @@ def _finalize_event(
 def run(
     frame_packet_stream: Iterator[FramePacket],
     config: AESEConfig,
+    binder: Optional[CharacterNameBinder] = None,
 ) -> Iterator[Event]:
     """
     Main AESE pipeline: consume FramePackets, yield completed Events online.
@@ -119,6 +131,10 @@ def run(
     Args:
         frame_packet_stream: Iterator of FramePacket objects (from ASVL or manifest replay).
         config: AESEConfig instance (use aese.config.load_config() to create).
+        binder: Optional CharacterNameBinder instance. When provided, the pipeline
+            feeds vocative name mentions from subtitle dialogue into the binder
+            during event finalization. The caller (cli.py) then calls
+            apply_resolved_names() after the run to perform retroactive relabeling.
 
     Yields:
         Event objects, one at a time, as they are completed (online, no buffering).
@@ -186,7 +202,7 @@ def run(
                 # --- Online merge ---
                 finalized = merger.process(event)
                 if finalized is not None:
-                    _finalize_event(finalized, events_emitted, clusterer, event_features)
+                _finalize_event(finalized, events_emitted, clusterer, event_features, binder)
                     event_graph.add_event(finalized)
                     buffer.record_boundary(finalized.end_time_ms)
                     events_emitted += 1
@@ -220,7 +236,7 @@ def run(
             event.event_type = classify_event(event, ev_feats)
             finalized = merger.process(event)
             if finalized is not None:
-                _finalize_event(finalized, events_emitted, clusterer, event_features)
+            _finalize_event(finalized, events_emitted, clusterer, event_features, binder)
                 event_graph.add_event(finalized)
                 buffer.record_boundary(finalized.end_time_ms)
                 events_emitted += 1
@@ -234,7 +250,7 @@ def run(
         final_event.event_type = classify_event(final_event, ev_feats)
         finalized = merger.process(final_event)
         if finalized is not None:
-            _finalize_event(finalized, events_emitted, clusterer, event_features)
+        _finalize_event(finalized, events_emitted, clusterer, event_features, binder)
             event_graph.add_event(finalized)
             events_emitted += 1
             yield finalized
@@ -243,7 +259,7 @@ def run(
     last_held = merger.finalize()
     if last_held is not None:
         last_held.event_type = classify_event(last_held, [])
-        _finalize_event(last_held, events_emitted, clusterer, event_features)
+        _finalize_event(last_held, events_emitted, clusterer, event_features, binder)
         event_graph.add_event(last_held)
         events_emitted += 1
         yield last_held
