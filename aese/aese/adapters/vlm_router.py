@@ -180,7 +180,7 @@ def ask(
     try:
         return mod._ask(image_rgb, prompt, max_new_tokens, system_prompt=system_prompt)
     except Exception as exc:
-        logger.debug("AESE VLM router: _ask error (%s): %s", _backend, exc)
+        logger.warning("AESE VLM router: _ask error (%s): %s", _backend, exc)
         return ""
 
 
