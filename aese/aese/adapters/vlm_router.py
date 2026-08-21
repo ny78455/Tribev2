@@ -159,6 +159,7 @@ def ask(
     image_rgb: Optional[np.ndarray],
     prompt: str,
     max_new_tokens: int = 60,
+    system_prompt: Optional[str] = None,
 ) -> str:
     """
     Low-level single-turn prompt through the active VLM.
@@ -167,6 +168,8 @@ def ask(
         image_rgb:      HxWx3 RGB numpy array, or None for text-only (gemma4 only).
         prompt:         User-turn text prompt.
         max_new_tokens: Maximum tokens to generate.
+        system_prompt:  Optional system instruction. Gemma-4 places this in a
+                        dedicated system role; FastVLM prepends it to the user turn.
 
     Returns:
         Decoded response string, or "" when unavailable / on failure.
@@ -175,7 +178,7 @@ def ask(
     if mod is None:
         return ""
     try:
-        return mod._ask(image_rgb, prompt, max_new_tokens)
+        return mod._ask(image_rgb, prompt, max_new_tokens, system_prompt=system_prompt)
     except Exception as exc:
         logger.debug("AESE VLM router: _ask error (%s): %s", _backend, exc)
         return ""
