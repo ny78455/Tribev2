@@ -121,6 +121,14 @@ def _ask(image_rgb: np.ndarray, prompt: str, max_new_tokens: int = 60,
 
     FastVLM has no system-role support; system_prompt is prepended
     to the user turn when provided.
+
+    Output extraction note:
+        LLaVA-style models expand the single -200 image-placeholder token into
+        N visual patch tokens during generate(). This makes the returned
+        output_ids sequence longer than input_ids.shape[1] by (N-1) tokens,
+        so slicing at input_len cuts mid-sentence. Instead we decode the full
+        output with special tokens preserved, then split on the Qwen assistant
+        turn marker to isolate exactly the generated reply.
     """
     if not _ensure_loaded():
         return ""
@@ -158,6 +166,13 @@ def _ask(image_rgb: np.ndarray, prompt: str, max_new_tokens: int = 60,
         px = _model.get_vision_tower().image_processor(images=pil_img, return_tensors="pt")["pixel_values"]
         px = px.to(_model.device, dtype=_model.dtype)
 
+        # Get the EOS token id for the Qwen <|im_end|> end-of-turn marker so
+        # generation stops cleanly rather than emitting textual stop-tags.
+        try:
+            eot_id = _tok.convert_tokens_to_ids("<|im_end|>")
+        except Exception:
+            eot_id = _tok.eos_token_id
+
         with torch.no_grad():
             output_ids = _model.generate(
                 inputs=input_ids,
@@ -165,14 +180,31 @@ def _ask(image_rgb: np.ndarray, prompt: str, max_new_tokens: int = 60,
                 images=px,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,   # greedy -- deterministic, fast
+                eos_token_id=eot_id,
             )
 
-        # Decode only the newly generated tokens (skip the prompt)
-        input_len = input_ids.shape[1]
-        generated_ids = output_ids[:, input_len:]
-        response = _tok.decode(
-            generated_ids[0], skip_special_tokens=True
-        ).strip()
+        # --- Extract assistant reply via turn-marker split ---
+        # Decoding the full sequence (with special tokens) lets us find the
+        # Qwen assistant turn marker even when the image expands the sequence.
+        full_output = _tok.decode(output_ids[0], skip_special_tokens=False)
+        logger.debug("AESE FastVLM: raw full output: %r", full_output[-300:])
+
+        # FastVLM uses the Qwen chat template: ...<|im_start|>assistant\n{reply}<|im_end|>
+        ASSISTANT_MARKER = "<|im_start|>assistant"
+        if ASSISTANT_MARKER in full_output:
+            assistant_text = full_output.split(ASSISTANT_MARKER)[-1]
+            # Strip trailing end-of-turn markers
+            for end_marker in ("<|im_end|>", "<|endoftext|>"):
+                assistant_text = assistant_text.split(end_marker)[0]
+            response = assistant_text.strip()
+        else:
+            # Fallback: slice by input token count (may be slightly wrong for
+            # multi-patch image models, but better than nothing)
+            input_len = input_ids.shape[1]
+            response = _tok.decode(
+                output_ids[0][input_len:], skip_special_tokens=True
+            ).strip()
+
         return response
 
     except Exception as exc:
