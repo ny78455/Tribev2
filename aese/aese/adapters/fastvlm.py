@@ -113,10 +113,14 @@ def get_active_detector_mode() -> str:
     return "fastvlm" if _fastvlm_available else "unavailable"
 
 
-def _ask(image_rgb: np.ndarray, prompt: str, max_new_tokens: int = 60) -> str:
+def _ask(image_rgb: np.ndarray, prompt: str, max_new_tokens: int = 60,
+         system_prompt: Optional[str] = None) -> str:
     """
     Run a single image + text prompt through FastVLM.
     Returns the model's response string, or "" on any failure.
+
+    FastVLM has no system-role support; system_prompt is prepended
+    to the user turn when provided.
     """
     if not _ensure_loaded():
         return ""
@@ -126,27 +130,30 @@ def _ask(image_rgb: np.ndarray, prompt: str, max_new_tokens: int = 60) -> str:
         import torch
 
         pil_img = PILImage.fromarray(image_rgb)
-        
+
+        # Prepend system instruction to the user prompt when supplied
+        full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+
         # Build chat -> render to string (not tokens) so we can place <image> exactly
         messages = [
-            {"role": "user", "content": f"<image>\n{prompt}"}
+            {"role": "user", "content": f"<image>\n{full_prompt}"}
         ]
         rendered = _tok.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=False
         )
-        
+
         pre, post = rendered.split("<image>", 1)
-        
+
         # Tokenize the text *around* the image token (no extra specials!)
         pre_ids  = _tok(pre,  return_tensors="pt", add_special_tokens=False).input_ids
         post_ids = _tok(post, return_tensors="pt", add_special_tokens=False).input_ids
-        
+
         IMAGE_TOKEN_INDEX = -200
         # Splice in the IMAGE token id (-200) at the placeholder position
         img_tok = torch.tensor([[IMAGE_TOKEN_INDEX]], dtype=pre_ids.dtype)
         input_ids = torch.cat([pre_ids, img_tok, post_ids], dim=1).to(_model.device)
         attention_mask = torch.ones_like(input_ids, device=_model.device)
-        
+
         # Preprocess image via the model's own processor
         px = _model.get_vision_tower().image_processor(images=pil_img, return_tensors="pt")["pixel_values"]
         px = px.to(_model.device, dtype=_model.dtype)
@@ -157,7 +164,7 @@ def _ask(image_rgb: np.ndarray, prompt: str, max_new_tokens: int = 60) -> str:
                 attention_mask=attention_mask,
                 images=px,
                 max_new_tokens=max_new_tokens,
-                do_sample=False,   # greedy — deterministic, fast
+                do_sample=False,   # greedy -- deterministic, fast
             )
 
         # Decode only the newly generated tokens (skip the prompt)
@@ -169,7 +176,7 @@ def _ask(image_rgb: np.ndarray, prompt: str, max_new_tokens: int = 60) -> str:
         return response
 
     except Exception as exc:
-        logger.debug("AESE FastVLM: inference error: %s", exc)
+        logger.warning("AESE FastVLM: inference error: %s", exc)
         return ""
 
 
