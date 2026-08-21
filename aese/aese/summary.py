@@ -59,7 +59,14 @@ SUMMARY_SYSTEM_PROMPT = (
     "and any visible reaction from other subjects. Be specific and vivid but strictly "
     "factual -- describe only what is visibly happening in the frame. "
     "Do not include greetings, offers of further help, meta-commentary, or markdown. "
-    "Do not say anything except the description itself."
+    "Do not say anything except the description itself.\n\n"
+    "--- EXAMPLES ---\n\n"
+    "Input: [Frame of a fast-paced action scene]\n"
+    "Output: A red sports car drifts aggressively around a tight city corner during a high-speed pursuit. Pedestrians on the sidewalk blur in the background as they turn and scramble for cover.\n\n"
+    "Input: [Frame of a quiet dialogue scene]\n"
+    "Output: Three professionals sit around a glass conference table in a brightly lit office. One woman stands pointing at a line graph on a whiteboard while the other two watch her attentively.\n\n"
+    "Input: [Frame of an emotional close-up]\n"
+    "Output: A close-up shot shows a young man staring out a rain-streaked window in a dark room. A single tear rolls down his cheek, conveying a strong sense of sorrow."
 )
 
 
