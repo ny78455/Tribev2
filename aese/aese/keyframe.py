@@ -59,5 +59,9 @@ def select_keyframe(
         raise ValueError(f"Unknown keyframe strategy: {strategy!r}. "
                          "Choose from: lowest_blur, center, highest_novelty, most_motion")
 
-    # Return the embedding as the keyframe proxy
+    # Return the real pixel image if available (live/--video mode).
+    # Fall back to the embedding vector as a proxy only in manifest-replay mode
+    # where no pixel data was ever extracted.
+    if selected.representative_image is not None:
+        return selected.representative_image.copy()
     return selected.multimodal_embedding.copy()
