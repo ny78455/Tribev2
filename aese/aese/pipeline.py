@@ -202,7 +202,7 @@ def run(
                 # --- Online merge ---
                 finalized = merger.process(event)
                 if finalized is not None:
-                _finalize_event(finalized, events_emitted, clusterer, event_features, binder)
+                    _finalize_event(finalized, events_emitted, clusterer, event_features, binder)
                     event_graph.add_event(finalized)
                     buffer.record_boundary(finalized.end_time_ms)
                     events_emitted += 1
@@ -236,7 +236,7 @@ def run(
             event.event_type = classify_event(event, ev_feats)
             finalized = merger.process(event)
             if finalized is not None:
-            _finalize_event(finalized, events_emitted, clusterer, event_features, binder)
+                _finalize_event(finalized, events_emitted, clusterer, event_features, binder)
                 event_graph.add_event(finalized)
                 buffer.record_boundary(finalized.end_time_ms)
                 events_emitted += 1
@@ -250,7 +250,7 @@ def run(
         final_event.event_type = classify_event(final_event, ev_feats)
         finalized = merger.process(final_event)
         if finalized is not None:
-        _finalize_event(finalized, events_emitted, clusterer, event_features, binder)
+            _finalize_event(finalized, events_emitted, clusterer, event_features, binder)
             event_graph.add_event(finalized)
             events_emitted += 1
             yield finalized
