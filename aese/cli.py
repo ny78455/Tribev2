@@ -43,6 +43,7 @@ from aese.pipeline import run
 from aese.preflight import audit_manifest, print_report
 from aese.render import render_event_log
 from aese.types import AESEConfig, Event, FramePacket
+from aese.adapters.character_naming import CharacterNameBinder, apply_resolved_names
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -294,11 +295,12 @@ def main() -> None:
 
     all_events = []
     event_count = 0
+    binder = CharacterNameBinder()  # accumulates vocative name evidence across the clip
     try:
         packet_stream = iter(packet_list)
 
         with open(args.output, "w", encoding="utf-8") as out_fh:
-            for event in run(packet_stream, config):
+            for event in run(packet_stream, config, binder=binder):
                 event_count += 1
                 all_events.append(event)
                 row = _event_to_dict(event, include_embedding=args.save_keyframes)
@@ -320,6 +322,24 @@ def main() -> None:
     except Exception as exc:
         logger.error("Pipeline error: %s", exc, exc_info=True)
         sys.exit(1)
+
+    # --- Retroactive name relabeling (batch display-time pass) ---
+    # apply_resolved_names() updates character_labels and summary text for ALL
+    # events using whatever name evidence accumulated during the full clip run.
+    # This is intentionally retroactive: an event at t=2s gets the name
+    # first evidenced at t=15s. The online detection logic is never affected.
+    # See DECISIONS.md for the online/batch boundary.
+    apply_resolved_names(all_events, binder)
+    if binder.resolved_names():
+        # Re-write the output file with the updated labels
+        logger.info("AESE CLI: re-writing %s with resolved character names", args.output)
+        try:
+            with open(args.output, "w", encoding="utf-8") as out_fh:
+                for event in all_events:
+                    row = _event_to_dict(event, include_embedding=args.save_keyframes)
+                    out_fh.write(json.dumps(row) + "\n")
+        except Exception as exc:
+            logger.warning("AESE CLI: failed to re-write output with resolved names: %s", exc)
 
     # --- Human-readable sidecar (.txt) ---
     if args.format == "human" and all_events:
