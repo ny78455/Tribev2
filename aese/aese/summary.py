@@ -104,19 +104,26 @@ def _vlm_available() -> bool:
         return False
 
 
-def _call_vlm(system_prompt: str, image: np.ndarray, max_tokens: int = 60) -> str:
+def _call_vlm(system_prompt: str, image: np.ndarray, max_tokens: int = 100) -> str:
     """
-    Thin wrapper around vlm_router.ask().
+    Run a VLM inference call via vlm_router.
+
+    Passes system_prompt and user prompt as distinct arguments so each
+    adapter can format them correctly (e.g. Gemma-4 puts them in separate
+    chat roles; FastVLM prepends the system text to the user turn).
+
     Returns the raw response string, or "" on any failure.
-    The system prompt is prepended to the user turn (standard approach for
-    instruction-following with this model family).
     """
     try:
         from .adapters.vlm_router import ask
-        combined_prompt = f"{system_prompt}\n\nDescribe this frame."
-        return ask(image, combined_prompt, max_new_tokens=max_tokens)
+        return ask(
+            image_rgb=image,
+            prompt="Describe this frame.",
+            system_prompt=system_prompt,
+            max_new_tokens=max_tokens,
+        )
     except Exception as exc:
-        logger.debug("AESE summary: VLM call failed: %s", exc)
+        logger.warning("AESE summary: VLM call failed: %s", exc)
         return ""
 
 
@@ -140,21 +147,22 @@ def _validate_or_fallback(raw: str, fallback: str) -> str:
 
     # Gate 1: length
     if not cleaned or len(cleaned) < 5:
-        logger.debug("AESE summary: VLM output too short (%d chars) -- using fallback", len(cleaned))
+        logger.warning("AESE summary: VLM output too short (%d chars) -- using fallback", len(cleaned))
         return fallback
 
     # Gate 2: filler patterns
     for pattern in _FILLER_PATTERNS:
         if pattern.search(cleaned):
-            logger.debug(
+            logger.warning(
                 "AESE summary: filler pattern %r matched -- using fallback",
                 pattern.pattern,
             )
             return fallback
 
-    # Gate 3: multi-line rambling
-    if cleaned.count("\n") > 1:
-        logger.debug("AESE summary: multi-line VLM output -- using fallback")
+    # Gate 3: excessive multi-line rambling (>4 newlines = almost certainly off-task)
+    # Allow up to 4 newlines so 2-sentence answers with a blank line separator pass.
+    if cleaned.count("\n") > 4:
+        logger.warning("AESE summary: multi-line VLM output (%d newlines) -- using fallback", cleaned.count("\n"))
         return fallback
 
     return cleaned
@@ -201,13 +209,13 @@ def generate_summary(event: "Event", keyframe_image: Optional[np.ndarray]) -> st
     )
 
     # Skip VLM if no real image data is available
-    if keyframe_image is None or (hasattr(keyframe_image, "max") and keyframe_image.max() < 5):
-        logger.debug("AESE summary: no real image -- using template for event %d", event.event_id)
+    if keyframe_image is None or keyframe_image.ndim != 3 or keyframe_image.max() < 5:
+        logger.debug("AESE summary: no real pixel image -- using template for event %d", event.event_id)
         return template_fallback
 
     # Skip VLM if model not loaded
     if not _vlm_available():
-        logger.debug("AESE summary: VLM unavailable -- using template for event %d", event.event_id)
+        logger.warning("AESE summary: VLM unavailable -- using template for event %d", event.event_id)
         return template_fallback
 
     try:
