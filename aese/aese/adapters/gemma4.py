@@ -112,6 +112,7 @@ def _ask(
     image_rgb: Optional[np.ndarray],
     prompt: str,
     max_new_tokens: int = 256,
+    system_prompt: Optional[str] = None,
 ) -> str:
     """
     Run a text-only or multimodal prompt through Gemma-4.
@@ -120,6 +121,7 @@ def _ask(
         image_rgb:      HxWx3 RGB numpy array, or None for text-only inference.
         prompt:         User-turn text prompt.
         max_new_tokens: Maximum tokens to generate.
+        system_prompt:  Optional system instruction placed before the user turn.
 
     Returns:
         Decoded response string, or "" on any failure.
@@ -132,9 +134,13 @@ def _ask(
         import torch
 
         # Build the message list
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": [{"type": "text", "text": system_prompt}]})
+
         if image_rgb is not None:
             pil_img = PILImage.fromarray(image_rgb)
-            messages = [
+            messages.append(
                 {
                     "role": "user",
                     "content": [
@@ -142,11 +148,11 @@ def _ask(
                         {"type": "text",  "text": prompt},
                     ],
                 }
-            ]
+            )
         else:
-            messages = [
+            messages.append(
                 {"role": "user", "content": [{"type": "text", "text": prompt}]}
-            ]
+            )
 
         # Use apply_chat_template to build tokenized inputs
         inputs = _processor.apply_chat_template(
