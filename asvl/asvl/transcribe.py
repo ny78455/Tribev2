@@ -254,7 +254,7 @@ def extract_audio(video_path: str, wav_path: str) -> bool:
 def _transcribe_faster_whisper(
     video_path: str,
     model_name: str = "base",
-    language: str = "hi",
+    language: str = "en",
 ) -> Optional[str]:
     """
     Transcribe *video_path* using the faster-whisper Python package.
@@ -350,7 +350,7 @@ def _seconds_to_srt_time(seconds: float) -> str:
 def transcribe(
     video_path: str,
     model_path: Optional[str] = None,
-    language: str = "hi",
+    language: str = "en",
     binary_path: Optional[str] = None,
 ) -> Optional[str]:
     """
@@ -360,7 +360,7 @@ def transcribe(
         video_path:   Path to the input video.
         model_path:   Override path to the ggml model (.bin). If None,
                       ``find_whisper_model()`` is called automatically.
-        language:     Language code for whisper (e.g. "hi", "auto").
+        language:     Language code for whisper (e.g. "en", "auto").
         binary_path:  Override path to whisper-cli binary. If None,
                       ``find_whisper_binary()`` is called automatically.
 
